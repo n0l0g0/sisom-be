@@ -1,0 +1,259 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+}
+
+enum TenantStatus {
+  ACTIVE
+  MOVED_OUT
+}
+
+enum RoomStatus {
+  VACANT
+  OCCUPIED
+  MAINTENANCE
+  OVERDUE
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum WaterFeeMethod {
+  METER_USAGE
+  METER_USAGE_MIN_AMOUNT
+  METER_USAGE_MIN_UNITS
+  METER_USAGE_PLUS_BASE
+  METER_USAGE_TIERED
+  FLAT_MONTHLY
+  FLAT_PER_PERSON
+}
+
+model User {
+  id            String    @id @default(cuid())
+  username      String    @unique
+  passwordHash  String
+  role          Role      @default(ADMIN)
+  permissions   Json?     // Stores array of menu keys allowed for this user
+  name          String?
+  phone         String?   @unique
+  lineUserId    String?   @unique
+  verifyCode    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+enum MaintenanceStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model MaintenanceRequest {
+  id          String            @id @default(cuid())
+  roomId      String
+  title       String
+  description String?
+  status      MaintenanceStatus @default(PENDING)
+  reportedBy  String?           // Tenant name or User ID
+  resolvedAt  DateTime?
+  cost        Decimal?          @db.Decimal(10, 2)
+  
+  room        Room              @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
+
+model Tenant {
+  id            String    @id @default(cuid())
+  name          String
+  nickname      String?
+  phone         String    @unique
+  idCard        String?
+  address       String?
+  lineUserId    String?   @unique
+  status        TenantStatus @default(ACTIVE)
+  contracts     Contract[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Room {
+  id            String    @id @default(cuid())
+  number        String
+  floor         Int
+  status        RoomStatus @default(VACANT)
+  pricePerMonth Decimal?  @db.Decimal(10, 2)
+  waterOverrideAmount   Decimal? @db.Decimal(10, 2)
+  electricOverrideAmount Decimal? @db.Decimal(10, 2)
+  buildingId    String?
+  building      Building?  @relation(fields: [buildingId], references: [id])
+  contracts     Contract[]
+  meterReadings MeterReading[]
+  maintenanceRequests MaintenanceRequest[]
+  assets        Asset[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([number, floor, buildingId])
+}
+
+model DormConfig {
+  id               String   @id @default(cuid())
+  dormName         String?
+  address          String?
+  phone            String?
+  lineId           String?
+  waterUnitPrice   Decimal  @db.Decimal(10, 2)
+  waterFeeMethod   WaterFeeMethod @default(METER_USAGE)
+  waterFlatMonthlyFee Decimal? @db.Decimal(10, 2)
+  waterFlatPerPersonFee Decimal? @db.Decimal(10, 2)
+  waterMinAmount   Decimal? @db.Decimal(10, 2)
+  waterMinUnits    Decimal? @db.Decimal(10, 2)
+  waterBaseFee     Decimal? @db.Decimal(10, 2)
+  waterTieredRates Json?
+  electricUnitPrice Decimal @db.Decimal(10, 2)
+  electricFeeMethod WaterFeeMethod @default(METER_USAGE)
+  electricFlatMonthlyFee Decimal? @db.Decimal(10, 2)
+  electricMinAmount   Decimal? @db.Decimal(10, 2)
+  electricMinUnits    Decimal? @db.Decimal(10, 2)
+  electricBaseFee     Decimal? @db.Decimal(10, 2)
+  electricTieredRates Json?
+  commonFee        Decimal  @db.Decimal(10, 2)
+  bankAccount      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Contract {
+  id            String    @id @default(cuid())
+  tenantId      String
+  roomId        String
+  startDate     DateTime
+  endDate       DateTime?
+  deposit       Decimal   @db.Decimal(10, 2)
+  currentRent   Decimal   @db.Decimal(10, 2)
+  occupantCount Int       @default(1)
+  isActive      Boolean   @default(true)
+  contractImageUrl String?
+  
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  room          Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  invoices      Invoice[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model MeterReading {
+  id              String    @id @default(cuid())
+  roomId          String
+  month           Int
+  year            Int
+  waterReading    Decimal   @db.Decimal(10, 2)
+  electricReading Decimal   @db.Decimal(10, 2)
+  recordedBy      String?   // User ID or Name
+  
+  room            Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([roomId, month, year])
+}
+
+model Invoice {
+  id              String    @id @default(cuid())
+  contractId      String
+  month           Int
+  year            Int
+  
+  rentAmount      Decimal   @db.Decimal(10, 2)
+  waterAmount     Decimal   @db.Decimal(10, 2)
+  electricAmount  Decimal   @db.Decimal(10, 2)
+  otherFees       Decimal   @default(0) @db.Decimal(10, 2)
+  discount        Decimal   @default(0) @db.Decimal(10, 2)
+  totalAmount     Decimal   @db.Decimal(10, 2)
+  
+  status          InvoiceStatus @default(DRAFT)
+  dueDate         DateTime
+  
+  contract        Contract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  items           InvoiceItem[]
+  payments        Payment[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model InvoiceItem {
+  id              String    @id @default(cuid())
+  invoiceId       String
+  description     String
+  amount          Decimal   @db.Decimal(10, 2)
+  
+  invoice         Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model Payment {
+  id              String    @id @default(cuid())
+  invoiceId       String
+  amount          Decimal   @db.Decimal(10, 2)
+  slipImageUrl    String?
+  slipBankRef     String?
+  paidAt          DateTime  @default(now())
+  verifiedBy      String?   // "AUTO" or User ID
+  status          PaymentStatus @default(PENDING)
+  
+  invoice         Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model Building {
+  id        String  @id @default(cuid())
+  name      String
+  code      String? @unique
+  floors    Int
+  rooms     Room[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Asset {
+  id           String   @id @default(cuid())
+  roomId       String
+  name         String
+  serialNumber String?
+  status       String   @default("GOOD") // GOOD, BROKEN, MISSING
+  
+  room         Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

@@ -1,0 +1,603 @@
+"use strict";
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.InvoicesService = void 0;
+const common_1 = require("@nestjs/common");
+const prisma_service_1 = require("../prisma/prisma.service");
+const constants_1 = require("../common/constants");
+const client_1 = require("@prisma/client");
+const line_service_1 = require("../line/line.service");
+const client_2 = require("@prisma/client");
+let InvoicesService = class InvoicesService {
+    prisma;
+    lineService;
+    constructor(prisma, lineService) {
+        this.prisma = prisma;
+        this.lineService = lineService;
+    }
+    async generate(generateInvoiceDto) {
+        const { roomId, month, year } = generateInvoiceDto;
+        const contract = await this.prisma.contract.findFirst({
+            where: {
+                roomId,
+                isActive: true,
+            },
+            include: {
+                room: true,
+                tenant: true,
+            },
+        });
+        if (!contract) {
+            throw new common_1.NotFoundException('Active contract not found for this room');
+        }
+        const currentReading = await this.prisma.meterReading.findFirst({
+            where: {
+                roomId,
+                month,
+                year,
+            },
+        });
+        if (!currentReading) {
+            throw new common_1.BadRequestException(`Meter reading for ${month}/${year} not found`);
+        }
+        let prevMonth = month - 1;
+        let prevYear = year;
+        if (prevMonth === 0) {
+            prevMonth = 12;
+            prevYear = year - 1;
+        }
+        const prevReading = await this.prisma.meterReading.findFirst({
+            where: {
+                roomId,
+                month: prevMonth,
+                year: prevYear,
+            },
+        });
+        const electricUsage = prevReading
+            ? Number(currentReading.electricReading) -
+                Number(prevReading.electricReading)
+            : 0;
+        const waterUsage = prevReading
+            ? Number(currentReading.waterReading) - Number(prevReading.waterReading)
+            : 0;
+        const dormConfig = await this.prisma.dormConfig.findFirst();
+        const electricUnitPrice = dormConfig
+            ? Number(dormConfig.electricUnitPrice)
+            : constants_1.UTILITY_RATES.ELECTRIC_UNIT_PRICE;
+        const waterUnitPrice = dormConfig
+            ? Number(dormConfig.waterUnitPrice)
+            : constants_1.UTILITY_RATES.WATER_UNIT_PRICE;
+        const commonFee = dormConfig
+            ? Number(dormConfig.commonFee)
+            : constants_1.UTILITY_RATES.COMMON_FEE;
+        const electricFeeMethod = dormConfig?.electricFeeMethod ?? client_1.WaterFeeMethod.METER_USAGE;
+        const electricMinAmount = Math.max(0, Number(dormConfig?.electricMinAmount ?? 0));
+        const electricMinUnits = Math.max(0, Number(dormConfig?.electricMinUnits ?? 0));
+        const computeElectricTieredAmount = (u, tiers) => {
+            if (!tiers.length)
+                return u * electricUnitPrice;
+            const normalized = tiers
+                .map((t) => ({
+                uptoUnit: t.uptoUnit === null || t.uptoUnit === undefined
+                    ? undefined
+                    : Number(t.uptoUnit),
+                unitPrice: Math.max(0, Number(t.unitPrice ?? 0)),
+                chargeType: t.chargeType === 'FLAT' ? 'FLAT' : 'PER_UNIT',
+            }))
+                .filter((t) => t.unitPrice > 0)
+                .map((t) => ({
+                uptoUnit: t.uptoUnit !== undefined && Number.isFinite(t.uptoUnit) && t.uptoUnit > 0
+                    ? t.uptoUnit
+                    : undefined,
+                unitPrice: t.unitPrice,
+                chargeType: t.chargeType,
+            }));
+            const finite = normalized
+                .filter((t) => t.uptoUnit !== undefined)
+                .sort((a, b) => a.uptoUnit - b.uptoUnit);
+            const infinite = normalized.filter((t) => t.uptoUnit === undefined);
+            const ordered = [...finite, ...infinite];
+            let remaining = Math.max(0, u);
+            let previousUpto = 0;
+            let total = 0;
+            for (const tier of ordered) {
+                if (remaining <= 0)
+                    break;
+                const upto = tier.uptoUnit ?? Number.POSITIVE_INFINITY;
+                const rangeSize = Math.max(0, upto - previousUpto);
+                const tierUnits = Number.isFinite(upto)
+                    ? Math.min(remaining, rangeSize)
+                    : remaining;
+                if (tier.chargeType === 'FLAT') {
+                    if (tierUnits > 0) {
+                        total += tier.unitPrice;
+                    }
+                }
+                else {
+                    total += tierUnits * tier.unitPrice;
+                }
+                remaining -= tierUnits;
+                previousUpto = Number.isFinite(upto) ? upto : previousUpto;
+            }
+            return total;
+        };
+        let electricAmount = 0;
+        const eUsage = Math.max(0, electricUsage);
+        if (electricFeeMethod === client_1.WaterFeeMethod.FLAT_MONTHLY) {
+            electricAmount = Number(dormConfig?.electricFlatMonthlyFee ?? 0);
+        }
+        else if (electricFeeMethod === client_1.WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
+            electricAmount = Math.max(eUsage * electricUnitPrice, electricMinAmount);
+        }
+        else if (electricFeeMethod === client_1.WaterFeeMethod.METER_USAGE_MIN_UNITS) {
+            electricAmount = eUsage <= electricMinUnits ? electricMinAmount : eUsage * electricUnitPrice;
+        }
+        else if (electricFeeMethod === client_1.WaterFeeMethod.METER_USAGE_PLUS_BASE) {
+            electricAmount =
+                eUsage <= electricMinUnits ? electricMinAmount : electricMinAmount + (eUsage - electricMinUnits) * electricUnitPrice;
+        }
+        else if (electricFeeMethod === client_1.WaterFeeMethod.METER_USAGE_TIERED) {
+            const eTiers = Array.isArray(dormConfig?.electricTieredRates)
+                ? dormConfig?.electricTieredRates
+                : [];
+            electricAmount = computeElectricTieredAmount(eUsage, eTiers);
+        }
+        else {
+            electricAmount = eUsage * electricUnitPrice;
+        }
+        const waterFeeMethod = dormConfig?.waterFeeMethod ?? client_1.WaterFeeMethod.METER_USAGE;
+        let waterAmount = 0;
+        const usage = Math.max(0, waterUsage);
+        const unitPrice = Math.max(0, waterUnitPrice);
+        const minAmount = Math.max(0, Number(dormConfig?.waterMinAmount ?? 0));
+        const minUnits = Math.max(0, Number(dormConfig?.waterMinUnits ?? 0));
+        const computeTieredAmount = (u, tiers) => {
+            if (!tiers.length)
+                return u * unitPrice;
+            const normalized = tiers
+                .map((t) => ({
+                uptoUnit: t.uptoUnit === null || t.uptoUnit === undefined
+                    ? undefined
+                    : Number(t.uptoUnit),
+                unitPrice: Math.max(0, Number(t.unitPrice ?? 0)),
+                chargeType: t.chargeType === 'FLAT' ? 'FLAT' : 'PER_UNIT',
+            }))
+                .filter((t) => t.unitPrice > 0)
+                .map((t) => ({
+                uptoUnit: t.uptoUnit !== undefined && Number.isFinite(t.uptoUnit) && t.uptoUnit > 0
+                    ? t.uptoUnit
+                    : undefined,
+                unitPrice: t.unitPrice,
+                chargeType: t.chargeType,
+            }));
+            const finite = normalized
+                .filter((t) => t.uptoUnit !== undefined)
+                .sort((a, b) => a.uptoUnit - b.uptoUnit);
+            const infinite = normalized.filter((t) => t.uptoUnit === undefined);
+            const ordered = [...finite, ...infinite];
+            let remaining = Math.max(0, u);
+            let previousUpto = 0;
+            let total = 0;
+            for (const tier of ordered) {
+                if (remaining <= 0)
+                    break;
+                const upto = tier.uptoUnit ?? Number.POSITIVE_INFINITY;
+                const rangeSize = Math.max(0, upto - previousUpto);
+                const tierUnits = Number.isFinite(upto)
+                    ? Math.min(remaining, rangeSize)
+                    : remaining;
+                if (tier.chargeType === 'FLAT') {
+                    if (tierUnits > 0) {
+                        total += tier.unitPrice;
+                    }
+                }
+                else {
+                    total += tierUnits * tier.unitPrice;
+                }
+                remaining -= tierUnits;
+                previousUpto = Number.isFinite(upto) ? upto : previousUpto;
+            }
+            return total;
+        };
+        const waterOverride = Number(contract.room?.waterOverrideAmount ?? 0);
+        const electricOverride = Number(contract.room?.electricOverrideAmount ?? 0);
+        if (waterOverride > 0) {
+            waterAmount = waterOverride;
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.FLAT_MONTHLY) {
+            waterAmount = Number(dormConfig?.waterFlatMonthlyFee ?? 0);
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.FLAT_PER_PERSON) {
+            const perPerson = Number(dormConfig?.waterFlatPerPersonFee ?? 0);
+            const occupants = Number(contract.occupantCount ?? 1);
+            waterAmount = perPerson * Math.max(1, occupants);
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
+            waterAmount = Math.max(usage * unitPrice, minAmount);
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.METER_USAGE_MIN_UNITS) {
+            waterAmount = usage <= minUnits ? minAmount : usage * unitPrice;
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.METER_USAGE_PLUS_BASE) {
+            waterAmount =
+                usage <= minUnits ? minAmount : minAmount + (usage - minUnits) * unitPrice;
+        }
+        else if (waterFeeMethod === client_1.WaterFeeMethod.METER_USAGE_TIERED) {
+            const tiers = Array.isArray(dormConfig?.waterTieredRates)
+                ? dormConfig?.waterTieredRates
+                : [];
+            waterAmount = computeTieredAmount(usage, tiers);
+        }
+        else {
+            waterAmount = usage * unitPrice;
+        }
+        if (electricOverride > 0) {
+            electricAmount = electricOverride;
+        }
+        const rentAmount = Number(contract.currentRent);
+        const otherFees = commonFee;
+        const totalAmount = rentAmount + electricAmount + waterAmount + otherFees;
+        const existingInvoice = await this.prisma.invoice.findFirst({
+            where: {
+                contractId: contract.id,
+                month,
+                year,
+            },
+        });
+        if (existingInvoice) {
+            throw new common_1.BadRequestException('Invoice already exists for this period');
+        }
+        const dueDateObj = new Date(year, month, 5);
+        const invoice = await this.prisma.invoice.create({
+            data: {
+                contractId: contract.id,
+                month,
+                year,
+                rentAmount,
+                electricAmount,
+                waterAmount,
+                otherFees,
+                totalAmount,
+                status: client_1.InvoiceStatus.DRAFT,
+                dueDate: dueDateObj,
+            },
+        });
+        if (contract.tenant && contract.tenant.lineUserId) {
+        }
+        return invoice;
+    }
+    async settle(id, method) {
+        const invoice = await this.prisma.invoice.findUnique({
+            where: { id },
+            include: { contract: true },
+        });
+        if (!invoice)
+            throw new common_1.NotFoundException('Invoice not found');
+        const amount = Math.max(0, Number(invoice.totalAmount));
+        if (amount === 0) {
+            return this.prisma.invoice.update({
+                where: { id },
+                data: { status: client_1.InvoiceStatus.PAID },
+            });
+        }
+        if (method === 'DEPOSIT') {
+            const currentDeposit = Math.max(0, Number(invoice.contract?.deposit ?? 0));
+            if (currentDeposit < amount) {
+                throw new common_1.BadRequestException('Insufficient deposit to settle invoice');
+            }
+            await this.prisma.contract.update({
+                where: { id: invoice.contractId },
+                data: { deposit: Math.max(0, currentDeposit - amount) },
+            });
+        }
+        await this.prisma.payment.create({
+            data: {
+                invoiceId: id,
+                amount,
+                slipBankRef: method,
+                status: client_2.PaymentStatus.VERIFIED,
+            },
+        });
+        const updated = await this.prisma.invoice.update({
+            where: { id },
+            data: { status: client_1.InvoiceStatus.PAID },
+        });
+        try {
+            const full = await this.prisma.invoice.findUnique({
+                where: { id },
+                include: {
+                    contract: {
+                        include: { tenant: true },
+                    },
+                },
+            });
+            const tenant = full?.contract?.tenant;
+            if (tenant?.lineUserId && method === 'DEPOSIT') {
+                const contract = await this.prisma.contract.findUnique({ where: { id: invoice.contractId } });
+                const depositLeft = Math.max(0, Number(contract?.deposit ?? 0));
+                const days = this.lineService.getMoveOutDaysByUserId(tenant.lineUserId);
+                await this.lineService.pushMessage(tenant.lineUserId, `ยอดเงินประกันที่จะคืนให้คุณคือ ฿${depositLeft.toLocaleString()} บาท\nเงินประกันจะได้รับคืนผ่านธนาคารภายใน ${days} วัน\nกรุณาส่งข้อมูลบัญชี: ชื่อ-นามสกุล, เบอร์โทรศัพท์, เลขบัญชี, ธนาคาร`);
+            }
+        }
+        catch (e) {
+            void e;
+        }
+        return updated;
+    }
+    create(createInvoiceDto) {
+        return this.prisma.invoice.create({
+            data: createInvoiceDto,
+        });
+    }
+    findAll() {
+        return this.prisma.invoice.findMany({
+            include: {
+                contract: {
+                    include: {
+                        room: true,
+                        tenant: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+    }
+    findByRoom(roomId) {
+        return this.prisma.invoice.findMany({
+            where: {
+                contract: {
+                    roomId: roomId,
+                },
+            },
+            include: {
+                contract: {
+                    include: {
+                        room: true,
+                        tenant: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+    }
+    findOne(id) {
+        return this.prisma.invoice.findUnique({
+            where: { id },
+            include: {
+                contract: {
+                    include: {
+                        room: true,
+                        tenant: true,
+                    },
+                },
+                items: true,
+                payments: true,
+            },
+        });
+    }
+    update(id, updateInvoiceDto) {
+        return this.prisma.invoice.update({
+            where: { id },
+            data: updateInvoiceDto,
+        }).then(async (inv) => {
+            const full = await this.prisma.invoice.findUnique({
+                where: { id },
+                include: { items: true },
+            });
+            if (!full)
+                return inv;
+            const base = Number(full.rentAmount) +
+                Number(full.waterAmount) +
+                Number(full.electricAmount) +
+                Number(full.otherFees || 0);
+            const itemsTotal = (full.items || []).reduce((sum, it) => sum + Number(it.amount), 0);
+            const discount = Number(full.discount || 0);
+            const nextTotal = Math.max(0, base + itemsTotal - discount);
+            if (nextTotal !== Number(full.totalAmount)) {
+                return this.prisma.invoice.update({
+                    where: { id },
+                    data: { totalAmount: nextTotal },
+                });
+            }
+            return inv;
+        });
+    }
+    remove(id) {
+        return this.prisma.invoice.delete({
+            where: { id },
+        });
+    }
+    async cancel(id) {
+        const exists = await this.prisma.invoice.findUnique({ where: { id } });
+        if (!exists) {
+            throw new common_1.NotFoundException('Invoice not found');
+        }
+        return this.prisma.invoice.update({
+            where: { id },
+            data: { status: client_1.InvoiceStatus.CANCELLED },
+        });
+    }
+    async addItem(invoiceId, body) {
+        const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+        if (!inv)
+            throw new common_1.NotFoundException('Invoice not found');
+        const item = await this.prisma.invoiceItem.create({
+            data: {
+                invoiceId,
+                description: String(body.description || '').slice(0, 200),
+                amount: Math.max(0, Number(body.amount || 0)),
+            },
+        });
+        const all = await this.prisma.invoiceItem.findMany({
+            where: { invoiceId },
+        });
+        const base = Number(inv.rentAmount) +
+            Number(inv.waterAmount) +
+            Number(inv.electricAmount) +
+            Number(inv.otherFees || 0);
+        const itemsTotal = all.reduce((sum, it) => sum + Number(it.amount), 0);
+        const discount = Number(inv.discount || 0);
+        const nextTotal = Math.max(0, base + itemsTotal - discount);
+        await this.prisma.invoice.update({
+            where: { id: invoiceId },
+            data: { totalAmount: nextTotal },
+        });
+        return item;
+    }
+    async updateItem(itemId, body) {
+        const item = await this.prisma.invoiceItem.findUnique({
+            where: { id: itemId },
+        });
+        if (!item)
+            throw new common_1.NotFoundException('Invoice item not found');
+        const updated = await this.prisma.invoiceItem.update({
+            where: { id: itemId },
+            data: {
+                ...(body.description !== undefined
+                    ? { description: String(body.description).slice(0, 200) }
+                    : {}),
+                ...(body.amount !== undefined
+                    ? { amount: Math.max(0, Number(body.amount)) }
+                    : {}),
+            },
+        });
+        const inv = await this.prisma.invoice.findUnique({
+            where: { id: item.invoiceId },
+        });
+        if (inv) {
+            const all = await this.prisma.invoiceItem.findMany({
+                where: { invoiceId: item.invoiceId },
+            });
+            const base = Number(inv.rentAmount) +
+                Number(inv.waterAmount) +
+                Number(inv.electricAmount) +
+                Number(inv.otherFees || 0);
+            const itemsTotal = all.reduce((sum, it) => sum + Number(it.amount), 0);
+            const discount = Number(inv.discount || 0);
+            const nextTotal = Math.max(0, base + itemsTotal - discount);
+            await this.prisma.invoice.update({
+                where: { id: item.invoiceId },
+                data: { totalAmount: nextTotal },
+            });
+        }
+        return updated;
+    }
+    async removeItem(itemId) {
+        const item = await this.prisma.invoiceItem.findUnique({
+            where: { id: itemId },
+        });
+        if (!item)
+            throw new common_1.NotFoundException('Invoice item not found');
+        await this.prisma.invoiceItem.delete({ where: { id: itemId } });
+        const inv = await this.prisma.invoice.findUnique({
+            where: { id: item.invoiceId },
+        });
+        if (inv) {
+            const all = await this.prisma.invoiceItem.findMany({
+                where: { invoiceId: item.invoiceId },
+            });
+            const base = Number(inv.rentAmount) +
+                Number(inv.waterAmount) +
+                Number(inv.electricAmount) +
+                Number(inv.otherFees || 0);
+            const itemsTotal = all.reduce((sum, it) => sum + Number(it.amount), 0);
+            const discount = Number(inv.discount || 0);
+            const nextTotal = Math.max(0, base + itemsTotal - discount);
+            await this.prisma.invoice.update({
+                where: { id: item.invoiceId },
+                data: { totalAmount: nextTotal },
+            });
+        }
+        return { ok: true };
+    }
+    async send(id) {
+        const invoice = await this.prisma.invoice.findUnique({
+            where: { id },
+            include: {
+                contract: {
+                    include: {
+                        tenant: true,
+                        room: { include: { building: true } },
+                    },
+                },
+            },
+        });
+        if (!invoice) {
+            throw new common_1.NotFoundException('Invoice not found');
+        }
+        const tenant = invoice.contract?.tenant;
+        const room = invoice.contract?.room;
+        if (tenant?.lineUserId && room?.number) {
+            const dormConfig = await this.prisma.dormConfig.findFirst();
+            const bankNote = dormConfig?.bankAccount
+                ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
+                : undefined;
+            await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+                room: room.number,
+                month: invoice.month,
+                year: invoice.year,
+                rentAmount: Number(invoice.rentAmount),
+                waterAmount: Number(invoice.waterAmount),
+                electricAmount: Number(invoice.electricAmount),
+                totalAmount: Number(invoice.totalAmount),
+                buildingLabel: room.building?.name || room.building?.code || undefined,
+                bankInstruction: bankNote,
+            });
+        }
+        const updated = await this.prisma.invoice.update({
+            where: { id },
+            data: { status: client_1.InvoiceStatus.SENT },
+            include: {
+                contract: { include: { tenant: true, room: true } },
+            },
+        });
+        return updated;
+    }
+    async sendAll(month, year) {
+        const invoices = await this.prisma.invoice.findMany({
+            where: { month, year },
+            include: { contract: { include: { tenant: true, room: { include: { building: true } } } } },
+        });
+        const dormConfig = await this.prisma.dormConfig.findFirst();
+        const bankNote = dormConfig?.bankAccount
+            ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
+            : undefined;
+        for (const inv of invoices) {
+            const tenant = inv.contract?.tenant;
+            const room = inv.contract?.room;
+            if (tenant?.lineUserId && room?.number) {
+                await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+                    room: room.number,
+                    month: inv.month,
+                    year: inv.year,
+                    rentAmount: Number(inv.rentAmount),
+                    waterAmount: Number(inv.waterAmount),
+                    electricAmount: Number(inv.electricAmount),
+                    totalAmount: Number(inv.totalAmount),
+                    buildingLabel: room?.building?.name || room?.building?.code || undefined,
+                    bankInstruction: bankNote,
+                });
+            }
+        }
+        await this.prisma.invoice.updateMany({
+            where: { month, year },
+            data: { status: client_1.InvoiceStatus.SENT },
+        });
+        return { ok: true, count: invoices.length };
+    }
+};
+exports.InvoicesService = InvoicesService;
+exports.InvoicesService = InvoicesService = __decorate([
+    (0, common_1.Injectable)(),
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        line_service_1.LineService])
+], InvoicesService);
+//# sourceMappingURL=invoices.service.js.map

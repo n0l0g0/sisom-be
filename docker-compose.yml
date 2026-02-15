@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: sisomapt-db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sisomapt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    container_name: sisomapt-api
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://admin:password@postgres:5432/sisomapt?schema=public
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
