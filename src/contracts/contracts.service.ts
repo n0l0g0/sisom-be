@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
@@ -164,5 +164,41 @@ export class ContractsService {
       }
     }
     return { ok: true, total: contracts.length, updated };
+  }
+
+  async moveOut(id: string, moveOutDate?: string) {
+    const contract = await this.prisma.contract.findUnique({
+      where: { id },
+    });
+    if (!contract) {
+      throw new BadRequestException('contract not found');
+    }
+
+    const unpaidCount = await this.prisma.invoice.count({
+      where: {
+        contractId: id,
+        status: {
+          not: 'PAID',
+        },
+      },
+    });
+
+    if (unpaidCount > 0) {
+      throw new BadRequestException('ยังมีใบแจ้งหนี้ที่ยังไม่เคลียร์');
+    }
+
+    const endDate = moveOutDate ? new Date(moveOutDate) : new Date();
+
+    const updated = await this.update(id, {
+      isActive: false,
+      endDate: endDate.toISOString(),
+    } as any);
+
+    await this.prisma.room.update({
+      where: { id: contract.roomId },
+      data: { status: RoomStatus.VACANT },
+    });
+
+    return updated;
   }
 }

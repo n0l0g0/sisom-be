@@ -132,4 +132,9 @@ export class LineController {
   ) {
     return this.lineService.apiMapLineUserRole(body);
   }
+
+  @Post('notify-moveout-due')
+  async notifyMoveoutDue(@Body() body?: { date?: string }) {
+    return this.lineService.notifyMoveoutForDate(body?.date);
+  }
 }

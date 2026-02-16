@@ -48,6 +48,11 @@ export class ContractsController {
     return this.contractsService.syncRentFromRoom();
   }
 
+  @Post(':id/move-out')
+  moveOut(@Param('id') id: string, @Body() body: { moveOutDate?: string }) {
+    return this.contractsService.moveOut(id, body?.moveOutDate);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.contractsService.remove(id);
