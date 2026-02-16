@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -11,24 +11,52 @@ export class UsersService {
 
   async create(createUserDto: CreateUserDto) {
     const { passwordHash, ...rest } = createUserDto;
+    const normalized: Omit<CreateUserDto, 'passwordHash'> = {
+      ...rest,
+      username: rest.username.trim(),
+      phone: rest.phone?.trim() || undefined,
+      lineUserId:
+        typeof rest.lineUserId === 'string' &&
+        rest.lineUserId.trim().length > 0
+          ? rest.lineUserId.trim()
+          : undefined,
+    };
     const hashedPassword = await bcrypt.hash(passwordHash, 10);
 
     const gen = () => String(Math.floor(100000 + Math.random() * 900000));
     const initialVerify =
-      !rest.lineUserId && rest.phone
-        ? rest.verifyCode && /^\d{6}$/.test(rest.verifyCode)
-          ? rest.verifyCode
+      !normalized.lineUserId && normalized.phone
+        ? normalized.verifyCode && /^\d{6}$/.test(normalized.verifyCode)
+          ? normalized.verifyCode
           : gen()
         : undefined;
 
-    return this.prisma.user.create({
-      data: {
-        ...rest,
-        verifyCode: initialVerify,
-        passwordHash: hashedPassword,
-        permissions: createUserDto.permissions as Prisma.InputJsonValue,
-      },
-    });
+    try {
+      return await this.prisma.user.create({
+        data: {
+          ...normalized,
+          verifyCode: initialVerify,
+          passwordHash: hashedPassword,
+          permissions: createUserDto.permissions as Prisma.InputJsonValue,
+        },
+      });
+    } catch (e: unknown) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        const target = Array.isArray(e.meta?.target)
+          ? (e.meta?.target as string[])[0]
+          : (e.meta?.target as string | undefined);
+        if (target === 'lineUserId') {
+          throw new BadRequestException('LINE User ID นี้ถูกใช้แล้วกับผู้ใช้งานอื่น');
+        }
+        if (target === 'username') {
+          throw new BadRequestException('ชื่อผู้ใช้งานนี้ถูกใช้แล้ว');
+        }
+        if (target === 'phone') {
+          throw new BadRequestException('เบอร์โทรศัพท์นี้ถูกใช้แล้ว');
+        }
+      }
+      throw e;
+    }
   }
 
   async findAll() {

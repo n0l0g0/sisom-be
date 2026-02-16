@@ -661,6 +661,13 @@ export class LineService implements OnModuleInit {
         const [buildingId, floorStr] = payload.split(':');
         const floor = Number(floorStr || '0');
         const prevF = this.staffPaymentState.get(userId || '') || {};
+        if (!prevF.buildingId || prevF.buildingId !== buildingId) {
+          await this.replyText(
+            event.replyToken,
+            'หมดเวลาทำรายการชำระบิล หรือข้อมูลตึกไม่ถูกต้อง กรุณาเริ่มใหม่จากเมนูรับชำระเงิน',
+          );
+          return null;
+        }
         this.staffPaymentState.set(userId || '', {
           ...prevF,
           buildingId,
@@ -856,6 +863,14 @@ export class LineService implements OnModuleInit {
       }
       if (userId && data.startsWith('PAY_ROOM=')) {
         if (!this.isStaffUser(userId)) return null;
+        const currentState = this.staffPaymentState.get(userId || '');
+        if (!currentState?.buildingId || typeof currentState.floor !== 'number') {
+          await this.replyText(
+            event.replyToken,
+            'หมดเวลาทำรายการชำระบิล หรือยังไม่ได้เลือกตึก/ชั้น กรุณาเริ่มใหม่จากเมนูรับชำระเงิน',
+          );
+          return null;
+        }
         const roomId = data.split('=')[1] || '';
         const prev = this.staffPaymentState.get(userId || '') || {};
         this.staffPaymentState.set(userId || '', { ...prev, roomId });
@@ -1045,6 +1060,14 @@ export class LineService implements OnModuleInit {
       }
       if (userId && data.startsWith('MO_ROOM=')) {
         if (!this.isStaffUser(userId)) return null;
+        const currentState = this.moveoutState.get(userId || '');
+        if (!currentState?.buildingId || typeof currentState.floor !== 'number') {
+          await this.replyText(
+            event.replyToken,
+            'หมดเวลาทำรายการย้ายออก หรือยังไม่ได้เลือกตึก/ชั้น กรุณาพิมพ์ แจ้งย้าย แล้วเลือกตึกและชั้นใหม่อีกครั้ง',
+          );
+          return null;
+        }
         const roomId = data.split('=')[1] || '';
         const contract = await this.prisma.contract.findFirst({
           where: { roomId, isActive: true },
@@ -1990,6 +2013,12 @@ export class LineService implements OnModuleInit {
         return this.replyText(
           event.replyToken,
           'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
+      }
+      if (userId && this.hasBlockingFlow(userId)) {
+        return this.replyText(
+          event.replyToken,
+          'คุณมีรายการที่ยังไม่เสร็จ กรุณาทำรายการเดิมให้เสร็จก่อน หรือรอ 3 นาทีให้หมดเวลา',
         );
       }
       const activeContracts = await this.prisma.contract.findMany({
