@@ -2790,11 +2790,8 @@ export class LineService implements OnModuleInit {
       return this.replyFlex(event.replyToken, flex);
     }
 
-    // Default: no sensitive echo
-    return this.replyText(
-      event.replyToken,
-      'กรุณาเลือกเมนูจากด้านล่างเพื่อใช้งานระบบ',
-    );
+    // Default: ไม่ตอบอะไรเพื่อหลีกเลี่ยงความสับสนของผู้ใช้
+    return;
   }
 
   private async handleMoveOutImage(event: LineImageEvent) {
