@@ -2463,6 +2463,227 @@ export class LineService implements OnModuleInit {
       );
     }
 
+    if (text === 'เลขบัญชีหอพัก') {
+      const dorm = await this.prisma.dormConfig.findFirst({
+        orderBy: { updatedAt: 'desc' },
+      });
+      const bankAccountRaw = (dorm?.bankAccount || '').trim();
+
+      if (!bankAccountRaw) {
+        return this.replyText(
+          event.replyToken,
+          'ยังไม่ได้ตั้งค่าเลขบัญชีหอพักในระบบ',
+        );
+      }
+
+      const parsed = (() => {
+        const result: {
+          bankName: string;
+          accountNo: string;
+          accountName: string;
+          branch: string;
+        } = { bankName: '', accountNo: '', accountName: '', branch: '' };
+
+        const txt = bankAccountRaw;
+        const nameIdx = txt.indexOf('ชื่อบัญชี');
+        const accIdx = txt.indexOf('เลขที่บัญชี');
+        const branchIdx = txt.indexOf('สาขา');
+
+        if (nameIdx !== -1 || accIdx !== -1) {
+          const beforeName =
+            nameIdx !== -1 ? txt.slice(0, nameIdx).trim() : txt.slice(0, accIdx).trim();
+          if (beforeName) result.bankName = beforeName;
+
+          let afterName = nameIdx !== -1 ? txt.slice(nameIdx + 'ชื่อบัญชี'.length).trim() : txt.slice(accIdx).trim();
+          if (nameIdx !== -1) {
+            const nextIdx = afterName.indexOf('เลขที่บัญชี');
+            if (nextIdx !== -1) {
+              result.accountName = afterName.slice(0, nextIdx).trim();
+              afterName = afterName.slice(nextIdx + 'เลขที่บัญชี'.length).trim();
+            }
+          }
+
+          const accPart = nameIdx !== -1 ? afterName : txt.slice(accIdx + 'เลขที่บัญชี'.length).trim();
+          const branchSplit = accPart.split('สาขา');
+          result.accountNo = (branchSplit[0] || '').trim();
+          if (branchSplit[1]) {
+            result.branch = branchSplit[1].trim();
+          }
+        } else {
+          const parts = txt.split(/\s+/).filter(Boolean);
+          if (parts.length >= 2) {
+            result.bankName = parts[0];
+            result.accountNo = parts.slice(1).join(' ');
+          } else {
+            result.accountNo = txt;
+          }
+        }
+
+        return result;
+      })();
+
+      const name = dorm?.dormName || 'หอพัก';
+      const accountNameFromConfig = dorm?.lineId || '';
+      const finalAccountName = parsed.accountName || accountNameFromConfig;
+      const bankName = parsed.bankName;
+      const accountNo = parsed.accountNo || bankAccountRaw;
+      const branch = parsed.branch;
+
+      const contents: any[] = [
+        {
+          type: 'text',
+          text: name,
+          weight: 'bold',
+          size: 'xl',
+          wrap: true,
+        },
+        {
+          type: 'box',
+          layout: 'vertical',
+          margin: 'md',
+          spacing: 'sm',
+          contents: [
+            ...(bankName
+              ? [
+                  {
+                    type: 'box',
+                    layout: 'horizontal',
+                    contents: [
+                      {
+                        type: 'text',
+                        text: 'ธนาคาร',
+                        size: 'sm',
+                        color: '#555555',
+                        flex: 0,
+                      },
+                      {
+                        type: 'text',
+                        text: bankName,
+                        size: 'sm',
+                        weight: 'bold',
+                        align: 'end',
+                      },
+                    ],
+                  },
+                ]
+              : []),
+            {
+              type: 'box',
+              layout: 'horizontal',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'เลขที่บัญชี',
+                  size: 'sm',
+                  color: '#555555',
+                  flex: 0,
+                },
+                {
+                  type: 'text',
+                  text: accountNo,
+                  size: 'md',
+                  weight: 'bold',
+                  align: 'end',
+                },
+              ],
+            },
+            ...(finalAccountName
+              ? [
+                  {
+                    type: 'box',
+                    layout: 'horizontal',
+                    contents: [
+                      {
+                        type: 'text',
+                        text: 'ชื่อบัญชี',
+                        size: 'sm',
+                        color: '#555555',
+                        flex: 0,
+                      },
+                      {
+                        type: 'text',
+                        text: finalAccountName,
+                        size: 'sm',
+                        weight: 'bold',
+                        align: 'end',
+                        wrap: true,
+                      },
+                    ],
+                  },
+                ]
+              : []),
+            ...(branch
+              ? [
+                  {
+                    type: 'box',
+                    layout: 'horizontal',
+                    contents: [
+                      {
+                        type: 'text',
+                        text: 'สาขา',
+                        size: 'sm',
+                        color: '#555555',
+                        flex: 0,
+                      },
+                      {
+                        type: 'text',
+                        text: branch,
+                        size: 'sm',
+                        weight: 'bold',
+                        align: 'end',
+                        wrap: true,
+                      },
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        },
+        {
+          type: 'text',
+          text: 'แตะค้างที่เลขที่บัญชีเพื่อคัดลอก',
+          size: 'xs',
+          color: '#aaaaaa',
+          margin: 'md',
+        },
+      ];
+
+      const bubble: any = {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents,
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#FF6413',
+              action: {
+                type: 'message',
+                label: 'คัดลอกเลขที่บัญชี',
+                text: `เลขที่บัญชี ${accountNo}`,
+              },
+            },
+          ],
+        },
+      };
+
+      const message: any = {
+        type: 'flex',
+        altText: 'เลขบัญชีหอพัก',
+        contents: bubble,
+      };
+
+      return this.replyFlex(event.replyToken, message);
+    }
+
     if (text.includes('ติดต่อสอบถาม')) {
       const dorm = await this.prisma.dormConfig.findFirst({
         orderBy: { updatedAt: 'desc' },
@@ -3441,11 +3662,15 @@ export class LineService implements OnModuleInit {
       }
     }
 
+    const ctxInvoiceId = this.paymentContext.get(userId);
+
     const tenant = await this.prisma.tenant.findFirst({
       where: { lineUserId: userId },
     });
     const isStaff = this.isStaffUser(userId);
-    if (!tenant && !isStaff) {
+    const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
+
+    if (!tenant && !isStaff && !ctxInvoiceId && contactMatches.length === 0) {
       return this.replyText(
         event.replyToken,
         'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
@@ -3461,10 +3686,18 @@ export class LineService implements OnModuleInit {
       if (!contract) {
         return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
       }
+    } else if (!tenant && contactMatches.length > 0) {
+      const roomIds = Array.from(
+        new Set(contactMatches.map((m) => m.roomId)),
+      );
+      contract = await this.prisma.contract.findFirst({
+        where: { roomId: { in: roomIds }, isActive: true },
+        include: { room: true },
+        orderBy: { startDate: 'desc' },
+      });
     }
 
     let invoice: any = null;
-    const ctxInvoiceId = this.paymentContext.get(userId);
 
     if (ctxInvoiceId) {
       invoice = await this.prisma.invoice.findUnique({
