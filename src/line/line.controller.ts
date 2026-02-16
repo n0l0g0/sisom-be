@@ -1,4 +1,14 @@
-import { Controller, Post, Headers, Logger, Get, Param, Query, Body, Req } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Headers,
+  Logger,
+  Get,
+  Param,
+  Query,
+  Body,
+  Req,
+} from '@nestjs/common';
 import { LineService } from './line.service';
 import type { WebhookRequestBody } from '@line/bot-sdk';
 import * as crypto from 'crypto';
@@ -23,15 +33,17 @@ export class LineController {
     const channelSecret = process.env.LINE_CHANNEL_SECRET;
     if (channelSecret) {
       const raw = req?.rawBody ?? Buffer.from(JSON.stringify(body));
-      const expectedSignature = crypto.createHmac('SHA256', channelSecret).update(raw).digest('base64');
+      const expectedSignature = crypto
+        .createHmac('SHA256', channelSecret)
+        .update(raw)
+        .digest('base64');
 
       // Prevent unused var error
       if (signature !== expectedSignature) {
         this.logger.warn(
-          `Signature mismatch: received=${signature?.slice(0,8) ?? 'none'} expected=${expectedSignature.slice(0,8)}`,
+          `Signature mismatch: received=${signature?.slice(0, 8) ?? 'none'} expected=${expectedSignature.slice(0, 8)}`,
         );
       }
-
     }
 
     const events = body.events;
@@ -62,12 +74,18 @@ export class LineController {
   }
 
   @Post('link-requests/:roomId/accept')
-  async acceptLink(@Param('roomId') roomId: string, @Body() body: { userId: string; tenantId: string }) {
+  async acceptLink(
+    @Param('roomId') roomId: string,
+    @Body() body: { userId: string; tenantId: string },
+  ) {
     return this.lineService.acceptLink(roomId, body.userId, body.tenantId);
   }
 
   @Post('link-requests/:roomId/reject')
-  async rejectLink(@Param('roomId') roomId: string, @Body() body: { userId: string }) {
+  async rejectLink(
+    @Param('roomId') roomId: string,
+    @Body() body: { userId: string },
+  ) {
     return this.lineService.rejectLink(roomId, body.userId);
   }
 
@@ -77,7 +95,9 @@ export class LineController {
   }
 
   @Post('richmenu/link')
-  async linkRichMenu(@Body() body: { userId: string; kind: 'GENERAL' | 'TENANT' | 'ADMIN' }) {
+  async linkRichMenu(
+    @Body() body: { userId: string; kind: 'GENERAL' | 'TENANT' | 'ADMIN' },
+  ) {
     return this.lineService.apiLinkRichMenu(body);
   }
 
@@ -90,12 +110,12 @@ export class LineController {
   async createGeneralFromLocal() {
     return this.lineService.apiCreateGeneralRichMenuFromLocal();
   }
-  
+
   @Post('richmenu/create-tenant-from-local')
   async createTenantFromLocal() {
     return this.lineService.apiCreateTenantRichMenuFromLocal();
   }
-  
+
   @Post('richmenu/create-admin-from-local')
   async createAdminFromLocal() {
     return this.lineService.apiCreateAdminRichMenuFromLocal();
@@ -107,7 +127,9 @@ export class LineController {
   }
 
   @Post('roles/map')
-  async mapLineUserRole(@Body() body: { userId: string; role: 'STAFF' | 'ADMIN' | 'OWNER' }) {
+  async mapLineUserRole(
+    @Body() body: { userId: string; role: 'STAFF' | 'ADMIN' | 'OWNER' },
+  ) {
     return this.lineService.apiMapLineUserRole(body);
   }
 }

@@ -3,7 +3,14 @@ import { messagingApi, WebhookEvent } from '@line/bot-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SlipOkService } from '../slipok/slipok.service';
-import { createWriteStream, readFileSync, existsSync } from 'fs';
+import {
+  createWriteStream,
+  readFileSync,
+  existsSync,
+  readdirSync,
+  writeFileSync,
+  mkdirSync,
+} from 'fs';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
@@ -17,13 +24,23 @@ type LineImageEvent = LineMessageEvent & {
   message: { id: string; type: 'image' };
 };
 
+type RoomContact = {
+  id: string;
+  name: string;
+  phone: string;
+  lineUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 @Injectable()
 export class LineService implements OnModuleInit {
   private client: messagingApi.MessagingApiClient;
   private blobClient: messagingApi.MessagingApiBlobClient | undefined;
   private readonly logger = new Logger(LineService.name);
   private readonly channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-  private readonly richMenuGeneralId = process.env.LINE_RICHMENU_GENERAL_ID || '';
+  private readonly richMenuGeneralId =
+    process.env.LINE_RICHMENU_GENERAL_ID || '';
   private readonly richMenuTenantId = process.env.LINE_RICHMENU_TENANT_ID || '';
   private readonly richMenuAdminId = process.env.LINE_RICHMENU_ADMIN_ID || '';
   private readonly adminUserIds = (process.env.LINE_ADMIN_USER_IDS || '')
@@ -34,14 +51,20 @@ export class LineService implements OnModuleInit {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  private readonly liffId = process.env.NEXT_PUBLIC_LIFF_ID || process.env.LIFF_ID || '';
+  private readonly liffId =
+    process.env.NEXT_PUBLIC_LIFF_ID || process.env.LIFF_ID || '';
   private readonly projectRoot = process.cwd();
   private readonly moveOutRequests = new Map<
     string,
     {
       requestedAt: Date;
       days?: number;
-      bankInfo?: { name?: string; phone?: string; accountNo?: string; bank?: string };
+      bankInfo?: {
+        name?: string;
+        phone?: string;
+        accountNo?: string;
+        bank?: string;
+      };
     }
   >();
   private readonly linkRequests = new Map<
@@ -50,8 +73,28 @@ export class LineService implements OnModuleInit {
   >();
   private readonly paymentContext = new Map<string, string>(); // userId -> invoiceId
   private readonly staffVerifyRequests = new Map<string, string>(); // line userId -> user.id
-  private readonly staffPaymentState = new Map<string, { buildingId?: string; floor?: number; roomId?: string; contractId?: string }>(); // staff flow state
-  private readonly moveoutState = new Map<string, { buildingId?: string; floor?: number; roomId?: string; contractId?: string; step?: 'WATER' | 'ELECTRIC'; waterImageUrl?: string; electricImageUrl?: string }>(); // move-out flow
+  private readonly registerPhoneContext = new Map<string, boolean>(); // line userId -> waiting for phone after REGISTERSISOM
+  private readonly staffPaymentState = new Map<
+    string,
+    {
+      buildingId?: string;
+      floor?: number;
+      roomId?: string;
+      contractId?: string;
+    }
+  >(); // staff flow state
+  private readonly moveoutState = new Map<
+    string,
+    {
+      buildingId?: string;
+      floor?: number;
+      roomId?: string;
+      contractId?: string;
+      step?: 'WATER' | 'ELECTRIC';
+      waterImageUrl?: string;
+      electricImageUrl?: string;
+    }
+  >(); // move-out flow
 
   private readonly paymentContextTimers = new Map<string, NodeJS.Timeout>();
   private readonly moveoutTimers = new Map<string, NodeJS.Timeout>();
@@ -66,8 +109,10 @@ export class LineService implements OnModuleInit {
     const t = setTimeout(() => {
       this.paymentContext.delete(userId);
       this.paymentContextTimers.delete(userId);
-      this.pushMessage(userId, 'หมดเวลาส่งสลิป กรุณาเลือกห้องอีกครั้ง').catch(() => {});
-    }, 60_000);
+      this.pushMessage(userId, 'หมดเวลาส่งสลิป กรุณาเลือกห้องอีกครั้ง').catch(
+        () => {},
+      );
+    }, 180_000);
     this.paymentContextTimers.set(userId, t);
   }
 
@@ -80,8 +125,10 @@ export class LineService implements OnModuleInit {
     const t = setTimeout(() => {
       this.moveoutState.delete(userId);
       this.moveoutTimers.delete(userId);
-      this.pushMessage(userId, 'หมดเวลาส่งรูป กรุณาเริ่มแจ้งย้ายออกใหม่').catch(() => {});
-    }, 60_000);
+      this.pushMessage(userId, 'หมดเวลาส่งรูป กรุณาเริ่มแจ้งย้ายออกใหม่').catch(
+        () => {},
+      );
+    }, 180_000);
     this.moveoutTimers.set(userId, t);
   }
 
@@ -91,6 +138,150 @@ export class LineService implements OnModuleInit {
       clearTimeout(prev);
       this.moveoutTimers.delete(userId);
     }
+  }
+
+  private async handlePhoneRegistration(
+    variants: string[],
+    userId: string | null | undefined,
+    replyToken: string,
+  ) {
+    const contactMatch = this.findRoomContactByPhones(variants);
+    if (contactMatch && userId) {
+      const store = this.readRoomContactsStore() || {};
+      const list = store[contactMatch.roomId] || [];
+      const idx = list.findIndex((c) => c.id === contactMatch.contact.id);
+      if (idx >= 0) {
+        const existing = list[idx];
+        if (existing.lineUserId) {
+          if (existing.lineUserId === userId) {
+            return this.replyText(
+              replyToken,
+              'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+            );
+          }
+          return this.replyText(
+            replyToken,
+            'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+          );
+        }
+        const now = new Date().toISOString();
+        const updated: RoomContact = {
+          ...existing,
+          lineUserId: userId,
+          updatedAt: now,
+        };
+        const nextList = [...list];
+        nextList[idx] = updated;
+        store[contactMatch.roomId] = nextList;
+        this.writeRoomContactsStore(store);
+        if (this.isStaffUser(userId)) {
+          await this.linkMenuForUser(userId, 'ADMIN');
+        } else {
+          await this.linkMenuForUser(userId, 'TENANT');
+        }
+        return this.replyText(
+          replyToken,
+          `เชื่อมบัญชี LINE กับห้องพักเรียบร้อยแล้ว (${updated.name || updated.phone})`,
+        );
+      }
+    }
+
+    const tenant = await this.prisma.tenant.findFirst({
+      where: {
+        OR: variants.map((p) => ({ phone: p })),
+      },
+    });
+
+    if (!tenant) {
+      return this.replyText(replyToken, 'Phone number not found in system.');
+    }
+
+    if (tenant.lineUserId) {
+      if (tenant.lineUserId === userId) {
+        return this.replyText(
+          replyToken,
+          'บัญชี LINE นี้เชื่อมกับหอพักเรียบร้อยแล้ว',
+        );
+      }
+      return this.replyText(
+        replyToken,
+        'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+      );
+    }
+
+    await this.prisma.tenant.update({
+      where: { id: tenant.id },
+      data: { lineUserId: userId || undefined },
+    });
+    if (userId) {
+      if (this.isStaffUser(userId)) {
+        await this.linkMenuForUser(userId, 'ADMIN');
+      } else {
+        await this.linkMenuForUser(userId, 'TENANT');
+      }
+    }
+
+    return this.replyText(
+      replyToken,
+      `Successfully registered! Welcome ${tenant.name}.`,
+    );
+  }
+
+  private getRoomContactsFilePath() {
+    const uploadsDir = resolve('/app/uploads');
+    if (!existsSync(uploadsDir)) {
+      try {
+        mkdirSync(uploadsDir, { recursive: true });
+      } catch {}
+    }
+    return join(uploadsDir, 'room-contacts.json');
+  }
+
+  private readRoomContactsStore(): Record<string, RoomContact[]> | null {
+    try {
+      const p = this.getRoomContactsFilePath();
+      if (!existsSync(p)) return {};
+      const raw = readFileSync(p, 'utf8');
+      if (!raw.trim()) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      return parsed as Record<string, RoomContact[]>;
+    } catch {
+      return {};
+    }
+  }
+
+  private writeRoomContactsStore(store: Record<string, RoomContact[]>) {
+    try {
+      const p = this.getRoomContactsFilePath();
+      writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
+    } catch {}
+  }
+
+  private findRoomContactByPhones(variants: string[]) {
+    const store = this.readRoomContactsStore() || {};
+    for (const [roomId, list] of Object.entries(store)) {
+      for (const c of list) {
+        if (variants.includes(c.phone)) {
+          return { roomId, contact: c };
+        }
+      }
+    }
+    return null;
+  }
+
+  private findRoomContactsByLineUserId(userId: string) {
+    if (!userId) return [];
+    const store = this.readRoomContactsStore() || {};
+    const results: Array<{ roomId: string; contact: RoomContact }> = [];
+    for (const [roomId, list] of Object.entries(store)) {
+      for (const c of list || []) {
+        if (c.lineUserId === userId) {
+          results.push({ roomId, contact: c });
+        }
+      }
+    }
+    return results;
   }
 
   constructor(
@@ -137,7 +328,9 @@ export class LineService implements OnModuleInit {
       await this.client.setDefaultRichMenu(this.richMenuGeneralId);
       this.logger.log('Default Rich Menu set to GENERAL');
     } catch (e) {
-      this.logger.warn(`setDefaultRichMenu error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `setDefaultRichMenu error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
@@ -146,7 +339,9 @@ export class LineService implements OnModuleInit {
     try {
       await this.client.setDefaultRichMenu(richMenuId);
     } catch (e) {
-      this.logger.warn(`setDefaultRichMenu(id) error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `setDefaultRichMenu(id) error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
@@ -155,11 +350,16 @@ export class LineService implements OnModuleInit {
     try {
       await this.client.linkRichMenuIdToUser(userId, richMenuId);
     } catch (e) {
-      this.logger.warn(`linkRichMenu error: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `linkRichMenu error: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
 
-  private async linkMenuForUser(userId: string, kind: 'GENERAL' | 'TENANT' | 'ADMIN') {
+  private async linkMenuForUser(
+    userId: string,
+    kind: 'GENERAL' | 'TENANT' | 'ADMIN',
+  ) {
     if (kind === 'ADMIN' && this.richMenuAdminId) {
       return this.linkRichMenu(userId, this.richMenuAdminId);
     }
@@ -191,7 +391,9 @@ export class LineService implements OnModuleInit {
       const data = (event.postback?.data || '').trim();
       if (userId && data.startsWith('MOVEOUT_DAYS=')) {
         const days = Number(data.split('=')[1] || '7') || 7;
-        const prev = this.moveOutRequests.get(userId) || { requestedAt: new Date() };
+        const prev = this.moveOutRequests.get(userId) || {
+          requestedAt: new Date(),
+        };
         this.moveOutRequests.set(userId, { ...prev, days });
         await this.pushMessage(
           userId,
@@ -221,7 +423,13 @@ export class LineService implements OnModuleInit {
         this.staffPaymentState.set(userId || '', { ...prevB, buildingId });
         const invoices = await this.prisma.invoice.findMany({
           where: {
-            status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+            status: {
+              in: [
+                InvoiceStatus.SENT,
+                InvoiceStatus.DRAFT,
+                InvoiceStatus.OVERDUE,
+              ],
+            },
             contract: { room: { buildingId } },
           },
           include: { contract: { include: { room: true } } },
@@ -232,7 +440,7 @@ export class LineService implements OnModuleInit {
               .map((inv) => inv.contract?.room?.floor)
               .filter((f) => typeof f === 'number'),
           ),
-        ).sort((a, b) => (a as number) - (b as number)) as number[];
+        ).sort((a, b) => a - b);
         if (floors.length === 0) {
           await this.replyText(event.replyToken, 'ไม่มีห้องค้างชำระในตึกนี้');
           return null;
@@ -252,7 +460,12 @@ export class LineService implements OnModuleInit {
                   type: 'button',
                   style: 'primary',
                   color: '#00B900',
-                  action: { type: 'postback', label: `ชั้น ${f}`, data: `PAY_FLOOR=${buildingId}:${f}`, displayText: `ชั้น ${f}` },
+                  action: {
+                    type: 'postback',
+                    label: `ชั้น ${f}`,
+                    data: `PAY_FLOOR=${buildingId}:${f}`,
+                    displayText: `ชั้น ${f}`,
+                  },
                 })),
               ],
             },
@@ -264,7 +477,12 @@ export class LineService implements OnModuleInit {
                   type: 'button',
                   style: 'secondary',
                   color: '#666666',
-                  action: { type: 'postback', label: 'ย้อนกลับ', data: 'PAY_BACK=BUILDINGS', displayText: 'ย้อนกลับ' },
+                  action: {
+                    type: 'postback',
+                    label: 'ย้อนกลับ',
+                    data: 'PAY_BACK=BUILDINGS',
+                    displayText: 'ย้อนกลับ',
+                  },
                 },
               ],
             },
@@ -279,10 +497,20 @@ export class LineService implements OnModuleInit {
         const [buildingId, floorStr] = payload.split(':');
         const floor = Number(floorStr || '0');
         const prevF = this.staffPaymentState.get(userId || '') || {};
-        this.staffPaymentState.set(userId || '', { ...prevF, buildingId, floor });
+        this.staffPaymentState.set(userId || '', {
+          ...prevF,
+          buildingId,
+          floor,
+        });
         const invoices = await this.prisma.invoice.findMany({
           where: {
-            status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+            status: {
+              in: [
+                InvoiceStatus.SENT,
+                InvoiceStatus.DRAFT,
+                InvoiceStatus.OVERDUE,
+              ],
+            },
             contract: { room: { buildingId, floor } },
           },
           include: { contract: { include: { room: true } } },
@@ -293,11 +521,14 @@ export class LineService implements OnModuleInit {
             invoices
               .map((inv) => inv.contract?.room)
               .filter((r) => !!r)
-              .map((r) => [r!.id, r!]),
+              .map((r) => [r.id, r]),
           ).values(),
         ).sort((a, b) => (a.number || '').localeCompare(b.number || ''));
         if (roomList.length === 0) {
-          await this.replyText(event.replyToken, `ไม่มีห้องค้างชำระในชั้น ${floor}`);
+          await this.replyText(
+            event.replyToken,
+            `ไม่มีห้องค้างชำระในชั้น ${floor}`,
+          );
           return null;
         }
         const message: any = {
@@ -310,12 +541,22 @@ export class LineService implements OnModuleInit {
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: `เลือกห้อง ชั้น ${floor}`, weight: 'bold', size: 'lg' },
+                {
+                  type: 'text',
+                  text: `เลือกห้อง ชั้น ${floor}`,
+                  weight: 'bold',
+                  size: 'lg',
+                },
                 ...roomList.slice(0, 12).map((r) => ({
                   type: 'button',
                   style: 'primary',
                   color: '#FF6413',
-                  action: { type: 'postback', label: `ห้อง ${r.number}`, data: `PAY_ROOM=${r.id}`, displayText: `ห้อง ${r.number}` },
+                  action: {
+                    type: 'postback',
+                    label: `ห้อง ${r.number}`,
+                    data: `PAY_ROOM=${r.id}`,
+                    displayText: `ห้อง ${r.number}`,
+                  },
                 })),
               ],
             },
@@ -327,7 +568,12 @@ export class LineService implements OnModuleInit {
                   type: 'button',
                   style: 'secondary',
                   color: '#666666',
-                  action: { type: 'postback', label: 'ย้อนกลับ', data: `PAY_BACK=FLOORS:${buildingId}`, displayText: 'ย้อนกลับ' },
+                  action: {
+                    type: 'postback',
+                    label: 'ย้อนกลับ',
+                    data: `PAY_BACK=FLOORS:${buildingId}`,
+                    displayText: 'ย้อนกลับ',
+                  },
                 },
               ],
             },
@@ -340,7 +586,9 @@ export class LineService implements OnModuleInit {
         if (!this.isStaffUser(userId)) return null;
         const payload = data.split('=')[1] || '';
         if (payload === 'BUILDINGS') {
-          const buildings = await this.prisma.building.findMany({ orderBy: { name: 'asc' } });
+          const buildings = await this.prisma.building.findMany({
+            orderBy: { name: 'asc' },
+          });
           if (buildings.length === 0) {
             await this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
             return null;
@@ -355,12 +603,22 @@ export class LineService implements OnModuleInit {
                 layout: 'vertical',
                 spacing: 'sm',
                 contents: [
-                  { type: 'text', text: 'เลือกตึก', weight: 'bold', size: 'lg' },
+                  {
+                    type: 'text',
+                    text: 'เลือกตึก',
+                    weight: 'bold',
+                    size: 'lg',
+                  },
                   ...buildings.slice(0, 12).map((b) => ({
                     type: 'button',
                     style: 'primary',
                     color: '#00B900',
-                    action: { type: 'postback', label: b.name, data: `PAY_BUILDING=${b.id}`, displayText: b.name },
+                    action: {
+                      type: 'postback',
+                      label: b.name,
+                      data: `PAY_BUILDING=${b.id}`,
+                      displayText: b.name,
+                    },
                   })),
                 ],
               },
@@ -373,7 +631,13 @@ export class LineService implements OnModuleInit {
           const buildingId = payload.split(':')[1] || '';
           const invoices = await this.prisma.invoice.findMany({
             where: {
-              status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+              status: {
+                in: [
+                  InvoiceStatus.SENT,
+                  InvoiceStatus.DRAFT,
+                  InvoiceStatus.OVERDUE,
+                ],
+              },
               contract: { room: { buildingId } },
             },
             include: { contract: { include: { room: true } } },
@@ -384,7 +648,7 @@ export class LineService implements OnModuleInit {
                 .map((inv) => inv.contract?.room?.floor)
                 .filter((f) => typeof f === 'number'),
             ),
-          ).sort((a, b) => (a as number) - (b as number)) as number[];
+          ).sort((a, b) => a - b);
           if (floors.length === 0) {
             await this.replyText(event.replyToken, 'ไม่มีห้องค้างชำระในตึกนี้');
             return null;
@@ -399,12 +663,22 @@ export class LineService implements OnModuleInit {
                 layout: 'vertical',
                 spacing: 'sm',
                 contents: [
-                  { type: 'text', text: 'เลือกชั้น', weight: 'bold', size: 'lg' },
+                  {
+                    type: 'text',
+                    text: 'เลือกชั้น',
+                    weight: 'bold',
+                    size: 'lg',
+                  },
                   ...floors.map((f) => ({
                     type: 'button',
                     style: 'primary',
                     color: '#00B900',
-                    action: { type: 'postback', label: `ชั้น ${f}`, data: `PAY_FLOOR=${buildingId}:${f}`, displayText: `ชั้น ${f}` },
+                    action: {
+                      type: 'postback',
+                      label: `ชั้น ${f}`,
+                      data: `PAY_FLOOR=${buildingId}:${f}`,
+                      displayText: `ชั้น ${f}`,
+                    },
                   })),
                 ],
               },
@@ -425,12 +699,28 @@ export class LineService implements OnModuleInit {
           include: { room: true },
         });
         if (!contract) {
-          await this.pushMessage(userId, 'ไม่พบสัญญาที่ใช้งานอยู่สำหรับห้องนี้');
+          await this.pushMessage(
+            userId,
+            'ไม่พบสัญญาที่ใช้งานอยู่สำหรับห้องนี้',
+          );
           return null;
         }
-        this.staffPaymentState.set(userId || '', { ...prev, roomId, contractId: contract.id });
+        this.staffPaymentState.set(userId || '', {
+          ...prev,
+          roomId,
+          contractId: contract.id,
+        });
         const invoice = await this.prisma.invoice.findFirst({
-          where: { contractId: contract.id, status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] } },
+          where: {
+            contractId: contract.id,
+            status: {
+              in: [
+                InvoiceStatus.SENT,
+                InvoiceStatus.DRAFT,
+                InvoiceStatus.OVERDUE,
+              ],
+            },
+          },
           orderBy: { createdAt: 'desc' },
         });
         if (!invoice) {
@@ -456,14 +746,29 @@ export class LineService implements OnModuleInit {
         if (!this.isStaffUser(userId)) return null;
         const buildingId = data.split('=')[1] || '';
         const prev = this.moveoutState.get(userId || '') || {};
-        this.moveoutState.set(userId || '', { ...prev, buildingId, step: undefined, waterImageUrl: undefined, electricImageUrl: undefined });
+        this.moveoutState.set(userId || '', {
+          ...prev,
+          buildingId,
+          step: undefined,
+          waterImageUrl: undefined,
+          electricImageUrl: undefined,
+        });
         const contracts = await this.prisma.contract.findMany({
           where: { isActive: true, room: { buildingId } },
           include: { room: true },
         });
-        const floors = Array.from(new Set(contracts.map((c) => c.room?.floor).filter((f) => typeof f === 'number'))).sort((a, b) => (a as number) - (b as number)) as number[];
+        const floors = Array.from(
+          new Set(
+            contracts
+              .map((c) => c.room?.floor)
+              .filter((f) => typeof f === 'number'),
+          ),
+        ).sort((a, b) => a - b);
         if (floors.length === 0) {
-          await this.replyText(event.replyToken, 'ไม่พบชั้นที่มีผู้เช่าปัจจุบันในตึกนี้');
+          await this.replyText(
+            event.replyToken,
+            'ไม่พบชั้นที่มีผู้เช่าปัจจุบันในตึกนี้',
+          );
           return null;
         }
         const message: any = {
@@ -476,12 +781,22 @@ export class LineService implements OnModuleInit {
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'แจ้งย้ายออก: เลือกชั้น', weight: 'bold', size: 'lg' },
+                {
+                  type: 'text',
+                  text: 'แจ้งย้ายออก: เลือกชั้น',
+                  weight: 'bold',
+                  size: 'lg',
+                },
                 ...floors.map((f) => ({
                   type: 'button',
                   style: 'primary',
                   color: '#d35400',
-                  action: { type: 'postback', label: `ชั้น ${f}`, data: `MO_FLOOR=${buildingId}:${f}`, displayText: `ชั้น ${f}` },
+                  action: {
+                    type: 'postback',
+                    label: `ชั้น ${f}`,
+                    data: `MO_FLOOR=${buildingId}:${f}`,
+                    displayText: `ชั้น ${f}`,
+                  },
                 })),
               ],
             },
@@ -496,7 +811,14 @@ export class LineService implements OnModuleInit {
         const [buildingId, floorStr] = payload.split(':');
         const floor = Number(floorStr || '0');
         const prev = this.moveoutState.get(userId || '') || {};
-        this.moveoutState.set(userId || '', { ...prev, buildingId, floor, step: undefined, waterImageUrl: undefined, electricImageUrl: undefined });
+        this.moveoutState.set(userId || '', {
+          ...prev,
+          buildingId,
+          floor,
+          step: undefined,
+          waterImageUrl: undefined,
+          electricImageUrl: undefined,
+        });
         const contracts = await this.prisma.contract.findMany({
           where: { isActive: true, room: { buildingId, floor } },
           include: { room: true, tenant: true },
@@ -507,11 +829,14 @@ export class LineService implements OnModuleInit {
             contracts
               .map((c) => c.room)
               .filter((r) => !!r)
-              .map((r) => [r!.id, r!]),
+              .map((r) => [r.id, r]),
           ).values(),
         ).sort((a, b) => (a.number || '').localeCompare(b.number || ''));
         if (roomList.length === 0) {
-          await this.replyText(event.replyToken, `ไม่พบห้องที่มีผู้เช่าในชั้น ${floor}`);
+          await this.replyText(
+            event.replyToken,
+            `ไม่พบห้องที่มีผู้เช่าในชั้น ${floor}`,
+          );
           return null;
         }
         const message: any = {
@@ -524,12 +849,22 @@ export class LineService implements OnModuleInit {
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: `แจ้งย้ายออก: ชั้น ${floor}`, weight: 'bold', size: 'lg' },
+                {
+                  type: 'text',
+                  text: `แจ้งย้ายออก: ชั้น ${floor}`,
+                  weight: 'bold',
+                  size: 'lg',
+                },
                 ...roomList.slice(0, 12).map((r) => ({
                   type: 'button',
                   style: 'primary',
                   color: '#e67e22',
-                  action: { type: 'postback', label: `ห้อง ${r.number}`, data: `MO_ROOM=${r.id}`, displayText: `ห้อง ${r.number}` },
+                  action: {
+                    type: 'postback',
+                    label: `ห้อง ${r.number}`,
+                    data: `MO_ROOM=${r.id}`,
+                    displayText: `ห้อง ${r.number}`,
+                  },
                 })),
               ],
             },
@@ -546,10 +881,19 @@ export class LineService implements OnModuleInit {
           include: { room: { include: { building: true } }, tenant: true },
         });
         if (!contract) {
-          await this.replyText(event.replyToken, 'ไม่พบผู้เช่าปัจจุบันสำหรับห้องนี้');
+          await this.replyText(
+            event.replyToken,
+            'ไม่พบผู้เช่าปัจจุบันสำหรับห้องนี้',
+          );
           return null;
         }
-        this.moveoutState.set(userId || '', { buildingId: contract.room?.buildingId || undefined, floor: contract.room?.floor, roomId, contractId: contract.id, step: 'WATER' });
+        this.moveoutState.set(userId || '', {
+          buildingId: contract.room?.buildingId || undefined,
+          floor: contract.room?.floor,
+          roomId,
+          contractId: contract.id,
+          step: 'WATER',
+        });
         const infoText = `แจ้งย้ายออก ห้อง ${contract.room?.number} ตึก ${contract.room?.building?.name || contract.room?.building?.code || '-'} ชั้น ${contract.room?.floor}\nผู้เช่า: ${contract.tenant?.name || '-'} โทร ${contract.tenant?.phone || '-'}`;
         await this.pushMessage(userId, infoText);
         await this.pushMessage(userId, 'กรุณาส่งรูปมิเตอร์น้ำ');
@@ -580,15 +924,17 @@ export class LineService implements OnModuleInit {
 
     await this.setDefaultRichMenuGeneral();
 
-    if (/รายละเอียดหอ(ง)?พัก/.test(text)) {
-      const fallbackImg = 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+    if (/รายละเอียดห้องพัก/.test(text)) {
+      const fallbackImg =
+        'https://line-sisom.washqueue.com/api/media/1771215544820-tz1nsd1tlin.png';
       const logoUrl = (() => {
         try {
           const p = join(resolve('/app/uploads'), 'dorm-extra.json');
           if (!existsSync(p)) return undefined;
           const raw = readFileSync(p, 'utf8');
           const parsed = JSON.parse(raw);
-          const u = typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
+          const u =
+            typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
           return u && /^https?:\/\//.test(u) ? u : undefined;
         } catch {
           return undefined;
@@ -596,8 +942,12 @@ export class LineService implements OnModuleInit {
       })();
       const heroUrl = logoUrl || fallbackImg;
       const getStatusLabel = async (price: number) => {
-        const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
-        const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
+        const total = await this.prisma.room.count({
+          where: { pricePerMonth: price },
+        });
+        const vacant = await this.prisma.room.count({
+          where: { pricePerMonth: price, status: 'VACANT' },
+        });
         return { label: vacant > 0 ? 'ว่าง' : 'ไม่ว่าง', total, vacant };
       };
       const fan = await getStatusLabel(2100);
@@ -609,7 +959,9 @@ export class LineService implements OnModuleInit {
             layout: 'horizontal',
             spacing: 'md',
             alignItems: 'center',
-            contents: [{ type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' }],
+            contents: [
+              { type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' },
+            ],
           }
         : undefined;
       const carouselContents: any = {
@@ -618,53 +970,284 @@ export class LineService implements OnModuleInit {
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: heroUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องพัดลม', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,100บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: fan.label, color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+                {
+                  type: 'text',
+                  text: 'ห้องพัดลม',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '2,100บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: fan.label,
+                  color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                },
               ],
             },
           },
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: heroUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องพัดลม + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,500 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: fanFurnished.label, color: fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF', flex: 0, margin: 'md', wrap: true },
+                {
+                  type: 'text',
+                  text: 'ห้องพัดลม + เฟอร์นิเจอร์ ',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '2,500 บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: fanFurnished.label,
+                  color:
+                    fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                  flex: 0,
+                  margin: 'md',
+                  wrap: true,
+                },
               ],
             },
           },
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: heroUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องแอร์ + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '3000 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: airFurnished.label, color: airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+                {
+                  type: 'text',
+                  text: 'ห้องแอร์ + เฟอร์นิเจอร์ ',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '3000 บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: airFurnished.label,
+                  color:
+                    airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                },
               ],
             },
           },
         ],
       };
-      const priceMessage: any = { type: 'flex', altText: 'รายละเอียดห้องพัก', contents: carouselContents };
+      const priceMessage: any = {
+        type: 'flex',
+        altText: 'รายละเอียดห้องพัก',
+        contents: carouselContents,
+      };
+      const ratesBubble: any = {
+        type: 'bubble',
+        header: {
+          type: 'box',
+          layout: 'horizontal',
+          contents: [
+            {
+              type: 'text',
+              text: 'อัตราค่าน้ำ ค่าไฟ',
+              weight: 'bold',
+              size: 'sm',
+              color: '#AAAAAA',
+            },
+          ],
+        },
+        hero: {
+          type: 'image',
+          url: heroUrl,
+          size: 'full',
+          aspectRatio: '20:13',
+          aspectMode: 'cover',
+          action: {
+            type: 'uri',
+            label: 'Action',
+            uri: 'https://linecorp.com/',
+          },
+        },
+        body: {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'md',
+          contents: [
+            {
+              type: 'box',
+              layout: 'vertical',
+              flex: 2,
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ค่าน้ำ 0-5 หน่วย คิดราคาเหมา 35 บาท',
+                  flex: 1,
+                  gravity: 'top',
+                },
+                {
+                  type: 'text',
+                  text: 'เกิน 5 หน่วยคิดหน่วยละ 7 บาท',
+                  flex: 2,
+                  gravity: 'center',
+                },
+                { type: 'separator', margin: 'md', color: '#000000FF' },
+                { type: 'separator', margin: 'xl', color: '#FFFFFFFF' },
+                {
+                  type: 'text',
+                  text: 'ค่าไฟ คิด หน่วยละ 7 บาท ตั้งแต่เริ่ม',
+                  flex: 2,
+                  gravity: 'center',
+                },
+                { type: 'separator' },
+              ],
+            },
+          ],
+        },
+      };
+      const ratesMessage: any = {
+        type: 'flex',
+        altText: 'อัตราค่าน้ำ ค่าไฟ',
+        contents: ratesBubble,
+      };
       await this.replyFlex(event.replyToken, priceMessage);
+      if (userId) await this.pushFlex(userId, ratesMessage);
       return null;
+    }
+    if (text.includes('รูปห้องพัก')) {
+      const logoUrl = (() => {
+        try {
+          const p = join(resolve('/app/uploads'), 'dorm-extra.json');
+          if (!existsSync(p)) return undefined;
+          const raw = readFileSync(p, 'utf8');
+          const parsed = JSON.parse(raw);
+          const u =
+            typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
+          return u && /^https?:\/\//.test(u) ? u : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      const roomDir = '/root/room';
+      let files: string[] = [];
+      try {
+        files = readdirSync(roomDir)
+          .filter((f) => /\.(png|jpg|jpeg|gif|webp)$/i.test(f))
+          .sort()
+          .slice(0, 10);
+      } catch {}
+      if (!files.length) {
+        return this.replyText(event.replyToken, 'ยังไม่มีรูปห้องพักที่อัพโหลด');
+      }
+      const base =
+        process.env.PUBLIC_API_URL || process.env.INTERNAL_API_URL || '';
+      const toUrl = (fn: string) =>
+        this.mediaService.buildRoomUrlFromBase(String(base), fn);
+      const header = logoUrl
+        ? {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'md',
+            alignItems: 'center',
+            contents: [
+              { type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' },
+            ],
+          }
+        : undefined;
+      const bubbles = files.map((f) => ({
+        type: 'bubble',
+        ...(header ? { header } : {}),
+        hero: {
+          type: 'image',
+          url: toUrl(f),
+          size: 'full',
+          aspectRatio: '20:13',
+          aspectMode: 'cover',
+        },
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: [
+            { type: 'text', text: f, size: 'sm', color: '#666666', wrap: true },
+          ],
+        },
+      }));
+      const message: any = {
+        type: 'flex',
+        altText: 'รูปห้องพัก',
+        contents: { type: 'carousel', contents: bubbles },
+      };
+      return this.replyFlex(event.replyToken, message);
     }
     if (text.toUpperCase().startsWith('REGISTERSTAFFSISOM')) {
       const parts = text.trim().split(/\s+/);
@@ -703,6 +1286,28 @@ export class LineService implements OnModuleInit {
     }
 
     if (text.toUpperCase() === 'REGISTERSISOM') {
+      if (userId) {
+        const store = this.readRoomContactsStore() || {};
+        for (const list of Object.values(store)) {
+          const found = (list || []).find((c) => c.lineUserId === userId);
+          if (found) {
+            return this.replyText(
+              event.replyToken,
+              'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+            );
+          }
+        }
+        const tenant = await this.prisma.tenant.findFirst({
+          where: { lineUserId: userId },
+        });
+        if (tenant) {
+          return this.replyText(
+            event.replyToken,
+            'บัญชี LINE นี้เชื่อมกับหอพักเรียบร้อยแล้ว',
+          );
+        }
+        this.registerPhoneContext.set(userId, true);
+      }
       return this.replyText(
         event.replyToken,
         'กรุณาพิมพ์เบอร์โทรศัพท์ที่ลงทะเบียนกับหอพัก',
@@ -715,7 +1320,10 @@ export class LineService implements OnModuleInit {
         const u = await this.prisma.user.findUnique({ where: { id: pending } });
         if (!u?.verifyCode) {
           this.staffVerifyRequests.delete(userId || '');
-          return this.replyText(event.replyToken, 'ยังไม่มีรหัสยืนยัน กรุณาขอรหัสจากหน้าเว็บ');
+          return this.replyText(
+            event.replyToken,
+            'ยังไม่มีรหัสยืนยัน กรุณาขอรหัสจากหน้าเว็บ',
+          );
         }
         if (u.verifyCode !== text) {
           return this.replyText(event.replyToken, 'รหัสยืนยันไม่ถูกต้อง');
@@ -745,43 +1353,19 @@ export class LineService implements OnModuleInit {
       }
       const phoneInput = parts[1];
       const variants = this.phoneVariants(phoneInput);
-
-      const tenant = await this.prisma.tenant.findFirst({
-        where: {
-          OR: variants.map((p) => ({ phone: p })),
-        },
-      });
-
-      if (!tenant) {
-        return this.replyText(
-          event.replyToken,
-          'Phone number not found in system.',
-        );
-      }
-
-      await this.prisma.tenant.update({
-        where: { id: tenant.id },
-        data: { lineUserId: userId },
-      });
-      if (userId) {
-        if (this.isStaffUser(userId)) {
-          await this.linkMenuForUser(userId, 'ADMIN');
-        } else {
-          await this.linkMenuForUser(userId, 'TENANT');
-        }
-      }
-
-      return this.replyText(
-        event.replyToken,
-        `Successfully registered! Welcome ${tenant.name}.`,
-      );
+      return this.handlePhoneRegistration(variants, userId, event.replyToken);
     }
 
     if (text === 'รับชำระเงิน') {
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
-      const buildings = await this.prisma.building.findMany({ orderBy: { name: 'asc' } });
+      const buildings = await this.prisma.building.findMany({
+        orderBy: { name: 'asc' },
+      });
       if (buildings.length === 0) {
         return this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
       }
@@ -800,7 +1384,12 @@ export class LineService implements OnModuleInit {
                 type: 'button',
                 style: 'primary',
                 color: '#00B900',
-                action: { type: 'postback', label: b.name, data: `PAY_BUILDING=${b.id}`, displayText: b.name },
+                action: {
+                  type: 'postback',
+                  label: b.name,
+                  data: `PAY_BUILDING=${b.id}`,
+                  displayText: b.name,
+                },
               })),
             ],
           },
@@ -811,7 +1400,10 @@ export class LineService implements OnModuleInit {
 
     if (text.includes('แจ้งย้าย')) {
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const activeContracts = await this.prisma.contract.findMany({
         where: { isActive: true },
@@ -822,7 +1414,7 @@ export class LineService implements OnModuleInit {
           activeContracts
             .map((c) => c.room?.building)
             .filter((b) => !!b)
-            .map((b) => [b!.id, b!]),
+            .map((b) => [b.id, b]),
         ).values(),
       ).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       if (buildings.length === 0) {
@@ -838,12 +1430,22 @@ export class LineService implements OnModuleInit {
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: 'แจ้งย้ายออก: เลือกตึก', weight: 'bold', size: 'lg' },
+              {
+                type: 'text',
+                text: 'แจ้งย้ายออก: เลือกตึก',
+                weight: 'bold',
+                size: 'lg',
+              },
               ...buildings.slice(0, 12).map((b) => ({
                 type: 'button',
                 style: 'primary',
                 color: '#d35400',
-                action: { type: 'postback', label: b.name, data: `MO_BUILDING=${b.id}`, displayText: b.name },
+                action: {
+                  type: 'postback',
+                  label: b.name,
+                  data: `MO_BUILDING=${b.id}`,
+                  displayText: b.name,
+                },
               })),
             ],
           },
@@ -852,7 +1454,12 @@ export class LineService implements OnModuleInit {
       return this.replyFlex(event.replyToken, message);
     }
 
-    if (userId && text.startsWith('ตึก ') && this.isStaffUser(userId) && this.moveoutState.get(userId || '')) {
+    if (
+      userId &&
+      text.startsWith('ตึก ') &&
+      this.isStaffUser(userId) &&
+      this.moveoutState.get(userId || '')
+    ) {
       // Optional text-based flow, skip for now
     }
 
@@ -861,7 +1468,10 @@ export class LineService implements OnModuleInit {
 
     if (/^ตึก\s+/i.test(text)) {
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const token = text.replace(/^ตึก\s+/i, '').trim();
       const building = await this.prisma.building.findFirst({
@@ -881,7 +1491,9 @@ export class LineService implements OnModuleInit {
         where: { buildingId: building.id },
         select: { floor: true },
       });
-      const floors = Array.from(new Set(rooms.map((r) => r.floor))).sort((a, b) => a - b);
+      const floors = Array.from(new Set(rooms.map((r) => r.floor))).sort(
+        (a, b) => a - b,
+      );
       const message: any = {
         type: 'flex',
         altText: 'เลือกชั้น',
@@ -892,12 +1504,22 @@ export class LineService implements OnModuleInit {
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: `เลือกชั้น (${building.name})`, weight: 'bold', size: 'lg' },
+              {
+                type: 'text',
+                text: `เลือกชั้น (${building.name})`,
+                weight: 'bold',
+                size: 'lg',
+              },
               ...floors.map((f) => ({
                 type: 'button',
                 style: 'primary',
                 color: '#00B900',
-                action: { type: 'postback', label: `ชั้น ${f}`, data: `PAY_FLOOR=${building.id}:${f}`, displayText: `ชั้น ${f}` },
+                action: {
+                  type: 'postback',
+                  label: `ชั้น ${f}`,
+                  data: `PAY_FLOOR=${building.id}:${f}`,
+                  displayText: `ชั้น ${f}`,
+                },
               })),
             ],
           },
@@ -908,11 +1530,17 @@ export class LineService implements OnModuleInit {
 
     if (/^ชั้น\s+\d+/i.test(text)) {
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const state = this.staffPaymentState.get(userId || '');
       if (!state?.buildingId) {
-        return this.replyText(event.replyToken, 'กรุณาเลือกตึกก่อน (พิมพ์: ตึก <ชื่อ/รหัส>)');
+        return this.replyText(
+          event.replyToken,
+          'กรุณาเลือกตึกก่อน (พิมพ์: ตึก <ชื่อ/รหัส>)',
+        );
       }
       const floor = Number(text.replace(/^ชั้น\s+/i, '').trim());
       if (!Number.isFinite(floor)) {
@@ -936,12 +1564,22 @@ export class LineService implements OnModuleInit {
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: `เลือกห้อง ชั้น ${floor}`, weight: 'bold', size: 'lg' },
+              {
+                type: 'text',
+                text: `เลือกห้อง ชั้น ${floor}`,
+                weight: 'bold',
+                size: 'lg',
+              },
               ...rooms.slice(0, 12).map((r) => ({
                 type: 'button',
                 style: 'primary',
                 color: '#FF6413',
-                action: { type: 'postback', label: `ห้อง ${r.number}`, data: `PAY_ROOM=${r.id}`, displayText: `ห้อง ${r.number}` },
+                action: {
+                  type: 'postback',
+                  label: `ห้อง ${r.number}`,
+                  data: `PAY_ROOM=${r.id}`,
+                  displayText: `ห้อง ${r.number}`,
+                },
               })),
             ],
           },
@@ -952,18 +1590,31 @@ export class LineService implements OnModuleInit {
 
     if (/^ห้อง\s+/i.test(text)) {
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const state = this.staffPaymentState.get(userId || '');
       if (!state?.buildingId || !state?.floor) {
-        return this.replyText(event.replyToken, 'กรุณาเลือกตึกและชั้นก่อน (พิมพ์: ตึก ..., ชั้น ...)');
+        return this.replyText(
+          event.replyToken,
+          'กรุณาเลือกตึกและชั้นก่อน (พิมพ์: ตึก ..., ชั้น ...)',
+        );
       }
       const roomNumber = text.replace(/^ห้อง\s+/i, '').trim();
       const room = await this.prisma.room.findFirst({
-        where: { buildingId: state.buildingId, floor: state.floor, number: roomNumber },
+        where: {
+          buildingId: state.buildingId,
+          floor: state.floor,
+          number: roomNumber,
+        },
       });
       if (!room) {
-        return this.replyText(event.replyToken, `ไม่พบห้อง ${roomNumber} ในชั้น ${state.floor}`);
+        return this.replyText(
+          event.replyToken,
+          `ไม่พบห้อง ${roomNumber} ในชั้น ${state.floor}`,
+        );
       }
       this.staffPaymentState.set(userId || '', { ...state, roomId: room.id });
       const contract = await this.prisma.contract.findFirst({
@@ -971,15 +1622,34 @@ export class LineService implements OnModuleInit {
         include: { room: true },
       });
       if (!contract) {
-        return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่สำหรับห้องนี้');
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบสัญญาที่ใช้งานอยู่สำหรับห้องนี้',
+        );
       }
-      this.staffPaymentState.set(userId || '', { ...state, roomId: room.id, contractId: contract.id });
+      this.staffPaymentState.set(userId || '', {
+        ...state,
+        roomId: room.id,
+        contractId: contract.id,
+      });
       const invoice = await this.prisma.invoice.findFirst({
-        where: { contractId: contract.id, status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] } },
+        where: {
+          contractId: contract.id,
+          status: {
+            in: [
+              InvoiceStatus.SENT,
+              InvoiceStatus.DRAFT,
+              InvoiceStatus.OVERDUE,
+            ],
+          },
+        },
         orderBy: { createdAt: 'desc' },
       });
       if (!invoice) {
-        return this.replyText(event.replyToken, 'ไม่มีบิลค้างชำระสำหรับห้องนี้');
+        return this.replyText(
+          event.replyToken,
+          'ไม่มีบิลค้างชำระสำหรับห้องนี้',
+        );
       }
       this.setPaymentContextWithTimeout(userId || '', invoice.id);
       const monthLabel = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
@@ -995,13 +1665,17 @@ export class LineService implements OnModuleInit {
       await this.pushFlex(userId!, flex);
       return null;
     }
-    
+
     if (/รายละเอียดหอ(ง)?พัก/.test(text)) {
       const imgUrl = 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
       const logoUrl = this.getDormLogoUrl();
       const getStatusLabel = async (price: number) => {
-        const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
-        const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
+        const total = await this.prisma.room.count({
+          where: { pricePerMonth: price },
+        });
+        const vacant = await this.prisma.room.count({
+          where: { pricePerMonth: price, status: 'VACANT' },
+        });
         return { label: vacant > 0 ? 'ว่าง' : 'ไม่ว่าง', total, vacant };
       };
       const fan = await getStatusLabel(2100);
@@ -1013,7 +1687,9 @@ export class LineService implements OnModuleInit {
             layout: 'horizontal',
             spacing: 'md',
             alignItems: 'center',
-            contents: [{ type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' }],
+            contents: [
+              { type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' },
+            ],
           }
         : undefined;
       const carouselContents: any = {
@@ -1022,15 +1698,44 @@ export class LineService implements OnModuleInit {
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: imgUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องพัดลม', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,100บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: fan.label, color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+                {
+                  type: 'text',
+                  text: 'ห้องพัดลม',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '2,100บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: fan.label,
+                  color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                },
               ],
             },
             footer: {
@@ -1040,7 +1745,11 @@ export class LineService implements OnModuleInit {
               contents: [
                 {
                   type: 'button',
-                  action: { type: 'message', label: 'รายละเอียด', text: 'ภายในจะมีเพียงพัดลมเพดาน ห้องพัดลมค่าประกัน 1,000 บาท' },
+                  action: {
+                    type: 'message',
+                    label: 'รายละเอียด',
+                    text: 'ภายในจะมีเพียงพัดลมเพดาน ห้องพัดลมค่าประกัน 1,000 บาท',
+                  },
                   style: 'primary',
                 },
               ],
@@ -1049,15 +1758,48 @@ export class LineService implements OnModuleInit {
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: imgUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องพัดลม + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,500 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: fanFurnished.label, color: fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF', flex: 0, margin: 'md', wrap: true },
+                {
+                  type: 'text',
+                  text: 'ห้องพัดลม + เฟอร์นิเจอร์ ',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '2,500 บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: fanFurnished.label,
+                  color:
+                    fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                  flex: 0,
+                  margin: 'md',
+                  wrap: true,
+                },
               ],
             },
             footer: {
@@ -1081,15 +1823,45 @@ export class LineService implements OnModuleInit {
           {
             type: 'bubble',
             ...(header ? { header } : {}),
-            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            hero: {
+              type: 'image',
+              url: imgUrl,
+              size: 'full',
+              aspectRatio: '20:13',
+              aspectMode: 'cover',
+            },
             body: {
               type: 'box',
               layout: 'vertical',
               spacing: 'sm',
               contents: [
-                { type: 'text', text: 'ห้องแอร์ + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
-                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '3000 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
-                { type: 'text', text: airFurnished.label, color: airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+                {
+                  type: 'text',
+                  text: 'ห้องแอร์ + เฟอร์นิเจอร์ ',
+                  weight: 'bold',
+                  size: 'xl',
+                  wrap: true,
+                },
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: '3000 บาท',
+                      weight: 'bold',
+                      size: 'xl',
+                      flex: 0,
+                      wrap: true,
+                    },
+                  ],
+                },
+                {
+                  type: 'text',
+                  text: airFurnished.label,
+                  color:
+                    airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF',
+                },
               ],
             },
             footer: {
@@ -1116,7 +1888,15 @@ export class LineService implements OnModuleInit {
         header: {
           type: 'box',
           layout: 'horizontal',
-          contents: [{ type: 'text', text: 'อัตราค่าน้ำ ค่าไฟ', weight: 'bold', size: 'sm', color: '#AAAAAA' }],
+          contents: [
+            {
+              type: 'text',
+              text: 'อัตราค่าน้ำ ค่าไฟ',
+              weight: 'bold',
+              size: 'sm',
+              color: '#AAAAAA',
+            },
+          ],
         },
         hero: {
           type: 'image',
@@ -1124,7 +1904,11 @@ export class LineService implements OnModuleInit {
           size: 'full',
           aspectRatio: '20:13',
           aspectMode: 'cover',
-          action: { type: 'uri', label: 'Action', uri: 'https://linecorp.com/' },
+          action: {
+            type: 'uri',
+            label: 'Action',
+            uri: 'https://linecorp.com/',
+          },
         },
         body: {
           type: 'box',
@@ -1136,30 +1920,62 @@ export class LineService implements OnModuleInit {
               layout: 'vertical',
               flex: 2,
               contents: [
-                { type: 'text', text: 'ค่าน้ำ 0-5 หน่วย คิดราคาเหมา 35 บาท', flex: 1, gravity: 'top' },
-                { type: 'text', text: 'เกิน 5 หน่วยคิดหน่วยละ 7 บาท', flex: 2, gravity: 'center' },
+                {
+                  type: 'text',
+                  text: 'ค่าน้ำ 0-5 หน่วย คิดราคาเหมา 35 บาท',
+                  flex: 1,
+                  gravity: 'top',
+                },
+                {
+                  type: 'text',
+                  text: 'เกิน 5 หน่วยคิดหน่วยละ 7 บาท',
+                  flex: 2,
+                  gravity: 'center',
+                },
                 { type: 'separator', margin: 'md', color: '#000000FF' },
                 { type: 'separator', margin: 'xl', color: '#FFFFFFFF' },
-                { type: 'text', text: 'ค่าไฟ คิด หน่วยละ 7 บาท ตั้งแต่เริ่ม', flex: 2, gravity: 'center' },
+                {
+                  type: 'text',
+                  text: 'ค่าไฟ คิด หน่วยละ 7 บาท ตั้งแต่เริ่ม',
+                  flex: 2,
+                  gravity: 'center',
+                },
                 { type: 'separator' },
               ],
             },
           ],
         },
       };
-      const priceMessage: any = { type: 'flex', altText: 'รายละเอียดห้องพัก', contents: carouselContents };
-      const ratesMessage: any = { type: 'flex', altText: 'อัตราค่าน้ำ ค่าไฟ', contents: ratesBubble };
+      const priceMessage: any = {
+        type: 'flex',
+        altText: 'รายละเอียดห้องพัก',
+        contents: carouselContents,
+      };
+      const ratesMessage: any = {
+        type: 'flex',
+        altText: 'อัตราค่าน้ำ ค่าไฟ',
+        contents: ratesBubble,
+      };
       await this.replyFlex(event.replyToken, priceMessage);
       if (userId) await this.pushFlex(userId, ratesMessage);
       return null;
     }
     if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(text)) {
       const variants = this.phoneVariants(text);
+
+      if (userId && this.registerPhoneContext.get(userId)) {
+        this.registerPhoneContext.delete(userId);
+        return this.handlePhoneRegistration(variants, userId, event.replyToken);
+      }
+
       const tenant = await this.prisma.tenant.findFirst({
         where: { OR: variants.map((p) => ({ phone: p })) },
       });
       if (!tenant) {
-        return this.replyText(event.replyToken, 'ไม่พบเบอร์ในระบบ กรุณาติดต่อผู้ดูแล');
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบเบอร์ในระบบ กรุณาติดต่อผู้ดูแล',
+        );
       }
       const contract = await this.prisma.contract.findFirst({
         where: { tenantId: tenant.id, isActive: true },
@@ -1168,12 +1984,18 @@ export class LineService implements OnModuleInit {
       if (!contract?.room) {
         return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
       }
-      const buildingLabel = contract.room.building?.name || contract.room.building?.code || '-';
+      const buildingLabel =
+        contract.room.building?.name || contract.room.building?.code || '-';
       const roomId = contract.room.id;
       const list = this.linkRequests.get(roomId) || [];
       this.linkRequests.set(roomId, [
         ...list.filter((r) => r.userId !== (userId || '')),
-        { userId: userId || '', phone: tenant.phone, tenantId: tenant.id, createdAt: new Date() },
+        {
+          userId: userId || '',
+          phone: tenant.phone,
+          tenantId: tenant.id,
+          createdAt: new Date(),
+        },
       ]);
       const msg: any = {
         type: 'text',
@@ -1182,11 +2004,21 @@ export class LineService implements OnModuleInit {
           items: [
             {
               type: 'action',
-              action: { type: 'postback', label: 'ยืนยันเชื่อม', data: `LINK_ACCEPT=${roomId}:${tenant.id}`, displayText: 'ยืนยันเชื่อม' },
+              action: {
+                type: 'postback',
+                label: 'ยืนยันเชื่อม',
+                data: `LINK_ACCEPT=${roomId}:${tenant.id}`,
+                displayText: 'ยืนยันเชื่อม',
+              },
             },
             {
               type: 'action',
-              action: { type: 'postback', label: 'ปฏิเสธ', data: `LINK_REJECT=${roomId}`, displayText: 'ปฏิเสธ' },
+              action: {
+                type: 'postback',
+                label: 'ปฏิเสธ',
+                data: `LINK_REJECT=${roomId}`,
+                displayText: 'ปฏิเสธ',
+              },
             },
           ],
         },
@@ -1206,22 +2038,40 @@ export class LineService implements OnModuleInit {
           items: [
             {
               type: 'action',
-              action: { type: 'postback', label: '7 วัน', data: 'MOVEOUT_DAYS=7', displayText: 'โอนคืนภายใน 7 วัน' },
+              action: {
+                type: 'postback',
+                label: '7 วัน',
+                data: 'MOVEOUT_DAYS=7',
+                displayText: 'โอนคืนภายใน 7 วัน',
+              },
             },
             {
               type: 'action',
-              action: { type: 'postback', label: '15 วัน', data: 'MOVEOUT_DAYS=15', displayText: 'โอนคืนภายใน 15 วัน' },
+              action: {
+                type: 'postback',
+                label: '15 วัน',
+                data: 'MOVEOUT_DAYS=15',
+                displayText: 'โอนคืนภายใน 15 วัน',
+              },
             },
             {
               type: 'action',
-              action: { type: 'postback', label: '30 วัน', data: 'MOVEOUT_DAYS=30', displayText: 'โอนคืนภายใน 30 วัน' },
+              action: {
+                type: 'postback',
+                label: '30 วัน',
+                data: 'MOVEOUT_DAYS=30',
+                displayText: 'โอนคืนภายใน 30 วัน',
+              },
             },
           ],
         },
       };
       const r = await this.replyFlex(event.replyToken, message);
       if (userId) {
-        await this.pushMessage(userId, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
+        await this.pushMessage(
+          userId,
+          'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด',
+        );
       }
       return r;
     }
@@ -1239,7 +2089,9 @@ export class LineService implements OnModuleInit {
         bank: parse('ธนาคาร'),
       };
       if (userId2) {
-        const prev = this.moveOutRequests.get(userId2) || { requestedAt: new Date() };
+        const prev = this.moveOutRequests.get(userId2) || {
+          requestedAt: new Date(),
+        };
         this.moveOutRequests.set(userId2, { ...prev, bankInfo });
         await this.pushMessage(
           userId2,
@@ -1270,7 +2122,13 @@ export class LineService implements OnModuleInit {
       const invoices = await this.prisma.invoice.findMany({
         where: {
           contractId: contract.id,
-          status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+          status: {
+            in: [
+              InvoiceStatus.SENT,
+              InvoiceStatus.DRAFT,
+              InvoiceStatus.OVERDUE,
+            ],
+          },
         },
         orderBy: { createdAt: 'asc' }, // Oldest first
         take: 10, // Max carousel size
@@ -1287,14 +2145,25 @@ export class LineService implements OnModuleInit {
     if (text === 'ห้องค้างชำระ') {
       const userId = event.source.userId;
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const invoices = await this.prisma.invoice.findMany({
         where: {
-          status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] as InvoiceStatus[] },
+          status: {
+            in: [
+              InvoiceStatus.SENT,
+              InvoiceStatus.DRAFT,
+              InvoiceStatus.OVERDUE,
+            ] as InvoiceStatus[],
+          },
         },
         include: {
-          contract: { include: { room: { include: { building: true } }, tenant: true } },
+          contract: {
+            include: { room: { include: { building: true } }, tenant: true },
+          },
         },
         orderBy: [{ year: 'asc' }, { month: 'asc' }, { createdAt: 'asc' }],
         take: 10,
@@ -1309,7 +2178,10 @@ export class LineService implements OnModuleInit {
     if (text === 'รายการแจ้งซ่อม') {
       const userId = event.source.userId;
       if (!this.isStaffUser(userId)) {
-        return this.replyText(event.replyToken, 'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น');
+        return this.replyText(
+          event.replyToken,
+          'คำสั่งนี้สำหรับเจ้าหน้าที่เท่านั้น',
+        );
       }
       const requests = await this.prisma.maintenanceRequest.findMany({
         where: { status: 'PENDING' as any },
@@ -1318,51 +2190,110 @@ export class LineService implements OnModuleInit {
         take: 10,
       });
       if (requests.length === 0) {
-        return this.replyText(event.replyToken, 'ไม่มีรายการแจ้งซ่อมที่รอดำเนินการ');
+        return this.replyText(
+          event.replyToken,
+          'ไม่มีรายการแจ้งซ่อมที่รอดำเนินการ',
+        );
       }
       const carousel = this.buildMaintenanceCarouselForStaff(requests);
       return this.replyFlex(event.replyToken, carousel);
     }
 
     if (text.startsWith('ชำระค่าห้อง')) {
+      if (!userId) {
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบข้อมูลผู้ใช้ LINE กรุณาลงทะเบียนใหม่',
+        );
+      }
+
+      const parsed = this.parsePayRentText(text);
+      const contracts: any[] = [];
+
       const tenant = await this.prisma.tenant.findFirst({
         where: { lineUserId: userId },
       });
-      if (!tenant) {
+      if (tenant) {
+        const tenantContracts = await this.prisma.contract.findMany({
+          where: { tenantId: tenant.id },
+          include: { room: true },
+          orderBy: { startDate: 'desc' },
+        });
+        contracts.push(...tenantContracts);
+      }
+
+      const contactMatches = this.findRoomContactsByLineUserId(userId);
+      if (contactMatches.length > 0) {
+        const roomIds = Array.from(new Set(contactMatches.map((m) => m.roomId)));
+        const contactContracts = await this.prisma.contract.findMany({
+          where: { roomId: { in: roomIds } },
+          include: { room: true },
+          orderBy: { startDate: 'desc' },
+        });
+        const existingIds = new Set(contracts.map((c) => c.id));
+        for (const c of contactContracts) {
+          if (!existingIds.has(c.id)) {
+            contracts.push(c);
+          }
+        }
+      }
+
+      if (contracts.length === 0) {
         return this.replyText(
           event.replyToken,
-          'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
+          'ยังไม่พบข้อมูลผู้เช่าหรือผู้เข้าพัก กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
         );
       }
-      const contract = await this.prisma.contract.findFirst({
-        where: { tenantId: tenant.id, isActive: true },
-        include: { room: true },
-      });
-      if (!contract) {
-        return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
-      }
-      const parsed = this.parsePayRentText(text);
-      let invoice = null as Awaited<ReturnType<typeof this.prisma.invoice.findFirst>> | null;
+
+      const contractIds = contracts.map((c) => c.id);
+      let invoice = null as Awaited<
+        ReturnType<typeof this.prisma.invoice.findFirst>
+      > | null;
+
       if (parsed) {
         invoice = await this.prisma.invoice.findFirst({
-          where: { contractId: contract.id, month: parsed.month, year: parsed.year },
-          orderBy: { createdAt: 'desc' },
-        });
-      }
-      if (!invoice) {
-        invoice = await this.prisma.invoice.findFirst({
           where: {
-            contractId: contract.id,
-            status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+            contractId: { in: contractIds },
+            month: parsed.month,
+            year: parsed.year,
           },
           orderBy: { createdAt: 'desc' },
         });
       }
+
+      if (!invoice) {
+        invoice = await this.prisma.invoice.findFirst({
+          where: {
+            contractId: { in: contractIds },
+            status: {
+              in: [
+                InvoiceStatus.SENT,
+                InvoiceStatus.DRAFT,
+                InvoiceStatus.OVERDUE,
+              ],
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+      }
+
       if (!invoice) {
         return this.replyText(event.replyToken, 'ไม่พบใบแจ้งหนี้ที่ต้องชำระ');
       }
 
-      // Set context for slip verification
+      const contract =
+        contracts.find((c) => c.id === invoice.contractId) ||
+        (await this.prisma.contract.findUnique({
+          where: { id: invoice.contractId },
+          include: { room: true },
+        }));
+      if (!contract?.room) {
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบข้อมูลห้องของใบแจ้งหนี้นี้',
+        );
+      }
+
       if (userId) {
         this.setPaymentContextWithTimeout(userId, invoice.id);
       }
@@ -1379,8 +2310,93 @@ export class LineService implements OnModuleInit {
       });
       await this.replyFlex(event.replyToken, flex);
       if (userId) {
-        await this.pushMessage(userId, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
+        await this.pushMessage(
+          userId,
+          'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด',
+        );
       }
+      return null;
+    }
+
+    if (text === 'ตรวจสอบค่าเช่า') {
+      if (!userId) {
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบข้อมูลผู้ใช้ LINE กรุณาลงทะเบียนใหม่',
+        );
+      }
+      const contracts: any[] = [];
+      const tenant = await this.prisma.tenant.findFirst({
+        where: { lineUserId: userId },
+      });
+      if (tenant) {
+        const tenantContracts = await this.prisma.contract.findMany({
+          where: { tenantId: tenant.id },
+          include: {
+            room: {
+              include: { building: true },
+            },
+            invoices: true,
+          },
+          orderBy: { startDate: 'desc' },
+        });
+        contracts.push(...tenantContracts);
+      }
+      const contactMatches = this.findRoomContactsByLineUserId(userId);
+      if (contactMatches.length > 0) {
+        const roomIds = Array.from(
+          new Set(contactMatches.map((m) => m.roomId)),
+        );
+        const contactContracts = await this.prisma.contract.findMany({
+          where: { roomId: { in: roomIds } },
+          include: {
+            room: {
+              include: { building: true },
+            },
+            invoices: true,
+          },
+          orderBy: { startDate: 'desc' },
+        });
+        const existingIds = new Set(contracts.map((c) => c.id));
+        for (const c of contactContracts) {
+          if (!existingIds.has(c.id)) {
+            contracts.push(c);
+          }
+        }
+      }
+      if (contracts.length === 0) {
+        return this.replyText(
+          event.replyToken,
+          'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนก่อน',
+        );
+      }
+      const allInvoices: any[] = [];
+      for (const c of contracts) {
+        for (const inv of c.invoices || []) {
+          allInvoices.push(inv);
+        }
+      }
+      if (allInvoices.length === 0) {
+        return this.replyText(
+          event.replyToken,
+          'ยังไม่มีใบแจ้งหนี้สำหรับห้องของคุณ',
+        );
+      }
+      const unpaidInvoices = allInvoices.filter((inv) =>
+        [
+          InvoiceStatus.SENT,
+          InvoiceStatus.DRAFT,
+          InvoiceStatus.OVERDUE,
+        ].includes(inv.status),
+      );
+      if (unpaidInvoices.length === 0) {
+        return this.replyText(
+          event.replyToken,
+          'ไม่พบยอดค้างชำระสำหรับห้องของคุณ',
+        );
+      }
+      const carousel = this.buildUnpaidCarousel(unpaidInvoices, '');
+      await this.replyFlex(event.replyToken, carousel);
       return null;
     }
 
@@ -1389,51 +2405,185 @@ export class LineService implements OnModuleInit {
         const state = this.staffPaymentState.get(userId || '');
         let invoice: any = null;
         if (state?.contractId) {
-          invoice = await this.prisma.invoice.findFirst({
-            where: {
-              contractId: state.contractId,
-              status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
-            },
-            orderBy: { createdAt: 'desc' },
-          }) || await this.prisma.invoice.findFirst({
-            where: { contractId: state.contractId },
-            orderBy: { createdAt: 'desc' },
-          });
+          invoice =
+            (await this.prisma.invoice.findFirst({
+              where: {
+                contractId: state.contractId,
+                status: {
+                  in: [
+                    InvoiceStatus.SENT,
+                    InvoiceStatus.DRAFT,
+                    InvoiceStatus.OVERDUE,
+                  ],
+                },
+              },
+              orderBy: { createdAt: 'desc' },
+            })) ||
+            (await this.prisma.invoice.findFirst({
+              where: { contractId: state.contractId },
+              orderBy: { createdAt: 'desc' },
+            }));
         } else if (state?.roomId) {
           const contract = await this.prisma.contract.findFirst({
             where: { roomId: state.roomId, isActive: true },
           });
           if (contract) {
-            invoice = await this.prisma.invoice.findFirst({
-              where: {
-                contractId: contract.id,
-                status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
-              },
-              orderBy: { createdAt: 'desc' },
-            }) || await this.prisma.invoice.findFirst({
-              where: { contractId: contract.id },
-              orderBy: { createdAt: 'desc' },
-            });
+            invoice =
+              (await this.prisma.invoice.findFirst({
+                where: {
+                  contractId: contract.id,
+                  status: {
+                    in: [
+                      InvoiceStatus.SENT,
+                      InvoiceStatus.DRAFT,
+                      InvoiceStatus.OVERDUE,
+                    ],
+                  },
+                },
+                orderBy: { createdAt: 'desc' },
+              })) ||
+              (await this.prisma.invoice.findFirst({
+                where: { contractId: contract.id },
+                orderBy: { createdAt: 'desc' },
+              }));
           }
         }
         if (invoice) {
           this.setPaymentContextWithTimeout(userId || '', invoice.id);
         } else {
-          return this.replyText(event.replyToken, 'กรุณาเลือกห้องที่จะรับชำระก่อน');
+          return this.replyText(
+            event.replyToken,
+            'กรุณาเลือกห้องที่จะรับชำระก่อน',
+          );
         }
       }
-      return this.replyText(event.replyToken, 'ส่งสลิปเพื่อให้ระบบตรวจสอบ');
+      return this.replyText(
+        event.replyToken,
+        'กรุณาส่งรูปสลิปเป็นไฟล์รูปภาพเพื่อให้ระบบตรวจสอบและตัดยอด',
+      );
+    }
+
+    if (text.includes('ติดต่อสอบถาม')) {
+      const dorm = await this.prisma.dormConfig.findFirst({
+        orderBy: { updatedAt: 'desc' },
+      });
+      const logoUrl = this.getDormLogoUrl();
+      const base =
+        process.env.PUBLIC_API_URL || process.env.INTERNAL_API_URL || '';
+      const extra = (() => {
+        try {
+          const uploadsDir = resolve('/app/uploads');
+          const p = join(uploadsDir, 'dorm-extra.json');
+          if (!existsSync(p)) return {};
+          const raw = readFileSync(p, 'utf8');
+          const parsed = JSON.parse(raw);
+          const mapUrl =
+            typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined;
+          return { mapUrl };
+        } catch {
+          return {};
+        }
+      })() as { mapUrl?: string };
+      const name = dorm?.dormName || 'หอพัก';
+      const phone = dorm?.phone || '';
+      const phoneDigits = phone.replace(/[^\d+]/g, '');
+      const telUri = phoneDigits ? `tel:${phoneDigits}` : undefined;
+      const mapUri = extra.mapUrl;
+      const heroUrl =
+        logoUrl ||
+        (base
+          ? `${String(base).replace(/\/+$/, '')}/api/media/logo.png`
+          : undefined);
+      const bodyContents: any[] = [
+        {
+          type: 'text',
+          text: name,
+          weight: 'bold',
+          size: 'xl',
+          wrap: true,
+        },
+      ];
+      if (phone) {
+        bodyContents.push({
+          type: 'text',
+          text: `โทร: ${phone}`,
+          size: 'md',
+          margin: 'md',
+          wrap: true,
+        });
+      }
+      const footerButtons: any[] = [];
+      if (telUri) {
+        footerButtons.push({
+          type: 'button',
+          style: 'primary',
+          action: {
+            type: 'uri',
+            label: 'โทรเลย',
+            uri: telUri,
+          },
+        });
+      }
+      if (mapUri) {
+        footerButtons.push({
+          type: 'button',
+          style: 'secondary',
+          action: {
+            type: 'uri',
+            label: 'เปิดแผนที่',
+            uri: mapUri,
+          },
+        });
+      }
+      const bubble: any = {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: bodyContents,
+        },
+      };
+      if (heroUrl) {
+        bubble.hero = {
+          type: 'image',
+          url: heroUrl,
+          size: 'full',
+          aspectRatio: '20:13',
+          aspectMode: 'cover',
+        };
+      }
+      if (footerButtons.length > 0) {
+        bubble.footer = {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: footerButtons,
+        };
+      }
+      const flex: any = {
+        type: 'flex',
+        altText: 'ข้อมูลการติดต่อหอพัก',
+        contents: bubble,
+      };
+      return this.replyFlex(event.replyToken, flex);
     }
 
     // Default: no sensitive echo
-    return this.replyText(event.replyToken, 'ส่งสลิปเพื่อให้ระบบตรวจสอบ');
+    return this.replyText(
+      event.replyToken,
+      'กรุณาเลือกเมนูจากด้านล่างเพื่อใช้งานระบบ',
+    );
   }
 
   private async handleMoveOutImage(event: LineImageEvent) {
     const userId = event.source.userId || '';
     const state = this.moveoutState.get(userId);
     if (!state?.roomId || !state.step) {
-      return this.replyText(event.replyToken, 'กรุณาเลือกตึก/ชั้น/ห้องสำหรับย้ายออกก่อน');
+      return this.replyText(
+        event.replyToken,
+        'กรุณาเลือกตึก/ชั้น/ห้องสำหรับย้ายออกก่อน',
+      );
     }
     this.clearMoveoutTimer(userId);
     // Save image similar to slip
@@ -1442,11 +2592,16 @@ export class LineService implements OnModuleInit {
     let imgUrl: string | null = null;
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
-      const res = await fetch(apiUrl, { headers: { Authorization: `Bearer ${this.channelAccessToken}` } });
-      if (!res.ok) throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
+      const res = await fetch(apiUrl, {
+        headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+      });
+      if (!res.ok)
+        throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
       const body = res.body;
       if (!body) throw new Error('LINE response has no body');
-      const stream = Readable.fromWeb(body as unknown as NodeReadableStream<Uint8Array>);
+      const stream = Readable.fromWeb(
+        body as unknown as NodeReadableStream<Uint8Array>,
+      );
       await pipeline(stream, createWriteStream(filepath));
       try {
         const img = await Jimp.read(filepath);
@@ -1462,14 +2617,26 @@ export class LineService implements OnModuleInit {
         'https://line-sisom.washqueue.com';
       imgUrl = this.mediaService.buildUrlFromBase(baseUrl, filename);
     } catch (e) {
-      this.logger.warn(`Failed to save move-out image: ${e instanceof Error ? e.message : String(e)}`);
+      this.logger.warn(
+        `Failed to save move-out image: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
     if (!imgUrl) {
-      return this.replyText(event.replyToken, 'ระบบไม่สามารถบันทึกรูปได้ กรุณาส่งใหม่อีกครั้ง');
+      return this.replyText(
+        event.replyToken,
+        'ระบบไม่สามารถบันทึกรูปได้ กรุณาส่งใหม่อีกครั้ง',
+      );
     }
     if (state.step === 'WATER') {
-      this.moveoutState.set(userId, { ...state, waterImageUrl: imgUrl, step: 'ELECTRIC' });
-      await this.replyText(event.replyToken, 'รับรูปมิเตอร์น้ำแล้ว กรุณาส่งรูปมิเตอร์ไฟ');
+      this.moveoutState.set(userId, {
+        ...state,
+        waterImageUrl: imgUrl,
+        step: 'ELECTRIC',
+      });
+      await this.replyText(
+        event.replyToken,
+        'รับรูปมิเตอร์น้ำแล้ว กรุณาส่งรูปมิเตอร์ไฟ',
+      );
       this.startMoveoutTimer(userId);
       return;
     }
@@ -1478,8 +2645,16 @@ export class LineService implements OnModuleInit {
       this.moveoutState.set(userId, { ...next, step: undefined });
       this.clearMoveoutTimer(userId);
       // Persist record (using maintenanceRequest as storage with title "แจ้งย้ายออก")
-      const room = await this.prisma.room.findUnique({ where: { id: state.roomId }, include: { building: true } });
-      const contract = state.contractId ? await this.prisma.contract.findUnique({ where: { id: state.contractId }, include: { tenant: true } }) : null;
+      const room = await this.prisma.room.findUnique({
+        where: { id: state.roomId },
+        include: { building: true },
+      });
+      const contract = state.contractId
+        ? await this.prisma.contract.findUnique({
+            where: { id: state.contractId },
+            include: { tenant: true },
+          })
+        : null;
       const desc = [
         `WATER_IMG: ${next.waterImageUrl || '-'}`,
         `ELECTRIC_IMG: ${next.electricImageUrl || '-'}`,
@@ -1504,26 +2679,68 @@ export class LineService implements OnModuleInit {
             layout: 'vertical',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: 'บันทึกแจ้งย้ายออก', weight: 'bold', size: 'lg' },
-              { type: 'text', text: `ตึก ${room?.building?.name || room?.building?.code || '-'}`, size: 'sm', color: '#666666' },
-              { type: 'text', text: `ชั้น ${room?.floor} ห้อง ${room?.number}`, size: 'sm', color: '#666666' },
+              {
+                type: 'text',
+                text: 'บันทึกแจ้งย้ายออก',
+                weight: 'bold',
+                size: 'lg',
+              },
+              {
+                type: 'text',
+                text: `ตึก ${room?.building?.name || room?.building?.code || '-'}`,
+                size: 'sm',
+                color: '#666666',
+              },
+              {
+                type: 'text',
+                text: `ชั้น ${room?.floor} ห้อง ${room?.number}`,
+                size: 'sm',
+                color: '#666666',
+              },
               { type: 'separator', margin: 'md' },
-              { type: 'text', text: `ผู้เช่า: ${contract?.tenant?.name || '-'}`, size: 'sm' },
-              { type: 'text', text: `เบอร์: ${contract?.tenant?.phone || '-'}`, size: 'sm' },
+              {
+                type: 'text',
+                text: `ผู้เช่า: ${contract?.tenant?.name || '-'}`,
+                size: 'sm',
+              },
+              {
+                type: 'text',
+                text: `เบอร์: ${contract?.tenant?.phone || '-'}`,
+                size: 'sm',
+              },
             ],
           },
           footer: {
             type: 'box',
             layout: 'vertical',
             contents: [
-              { type: 'button', style: 'link', action: { type: 'uri', label: 'รูปมิเตอร์น้ำ', uri: next.waterImageUrl! } },
-              { type: 'button', style: 'link', action: { type: 'uri', label: 'รูปมิเตอร์ไฟ', uri: next.electricImageUrl! } },
+              {
+                type: 'button',
+                style: 'link',
+                action: {
+                  type: 'uri',
+                  label: 'รูปมิเตอร์น้ำ',
+                  uri: next.waterImageUrl!,
+                },
+              },
+              {
+                type: 'button',
+                style: 'link',
+                action: {
+                  type: 'uri',
+                  label: 'รูปมิเตอร์ไฟ',
+                  uri: next.electricImageUrl,
+                },
+              },
             ],
           },
         },
       };
       await this.pushFlex(userId, summaryFlex);
-      await this.replyText(event.replyToken, 'บันทึกรูปมิเตอร์น้ำ/ไฟ เรียบร้อย');
+      await this.replyText(
+        event.replyToken,
+        'บันทึกรูปมิเตอร์น้ำ/ไฟ เรียบร้อย',
+      );
       return;
     }
     return this.replyText(event.replyToken, 'ขั้นตอนไม่ถูกต้อง กรุณาเริ่มใหม่');
@@ -1576,9 +2793,7 @@ export class LineService implements OnModuleInit {
   private async replyFlex(replyToken: string, message: any) {
     if (!this.client) return;
     try {
-      this.logger.log(
-        `replyFlex: altText=${message?.altText ?? 'n/a'}`,
-      );
+      this.logger.log(`replyFlex: altText=${message?.altText ?? 'n/a'}`);
     } catch {}
     return this.client.replyMessage({
       replyToken,
@@ -1586,7 +2801,9 @@ export class LineService implements OnModuleInit {
     });
   }
 
-  private parsePayRentText(text: string): { month: number; year: number } | null {
+  private parsePayRentText(
+    text: string,
+  ): { month: number; year: number } | null {
     const raw = text.replace(/\s+/g, ' ').trim();
     const parts = raw.split(' ');
     // Expect patterns like: "ชำระค่าห้อง <เดือน> <ปี>" or "ชำระค่าห้อง <เดือน>"
@@ -1667,27 +2884,66 @@ export class LineService implements OnModuleInit {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าเช่า', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.rentAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' }
-                  ]
+                    {
+                      type: 'text',
+                      text: 'ค่าเช่า',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.rentAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
+                  ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าน้ำ', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.waterAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' }
-                  ]
+                    {
+                      type: 'text',
+                      text: 'ค่าน้ำ',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.waterAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
+                  ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าไฟ', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.electricAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' }
-                  ]
-                }
-              ]
+                    {
+                      type: 'text',
+                      text: 'ค่าไฟ',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.electricAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
+                  ],
+                },
+              ],
             },
             { type: 'separator', margin: 'md' },
             {
@@ -1701,7 +2957,7 @@ export class LineService implements OnModuleInit {
                   weight: 'bold',
                   size: 'lg',
                   flex: 0,
-                  margin: 'sm'
+                  margin: 'sm',
                 },
                 {
                   type: 'text',
@@ -1716,9 +2972,9 @@ export class LineService implements OnModuleInit {
                   weight: 'bold',
                   size: 'lg',
                   flex: 0,
-                }
-              ]
-            }
+                },
+              ],
+            },
           ],
         },
         footer: {
@@ -1733,9 +2989,9 @@ export class LineService implements OnModuleInit {
               action: {
                 type: 'message',
                 label: 'ชำระค่าเช่า',
-                text: `ชำระค่าห้อง ${this.thaiMonth(inv.month)} ${inv.year}`
+                text: `ชำระค่าห้อง ${this.thaiMonth(inv.month)} ${inv.year}`,
               },
-            }
+            },
           ],
         },
       };
@@ -1760,7 +3016,10 @@ export class LineService implements OnModuleInit {
       });
       const [intPart, decPart] = total.split('.');
       const roomNo = inv.contract?.room?.number ?? '-';
-      const buildingLabel = inv.contract?.room?.building?.name || inv.contract?.room?.building?.code || '-';
+      const buildingLabel =
+        inv.contract?.room?.building?.name ||
+        inv.contract?.room?.building?.code ||
+        '-';
       const floor = inv.contract?.room?.floor ?? '-';
       const tenantName = inv.contract?.tenant?.name || '-';
       const tenantPhone = inv.contract?.tenant?.phone || '-';
@@ -1771,8 +3030,19 @@ export class LineService implements OnModuleInit {
           layout: 'vertical',
           spacing: 'sm',
           contents: [
-            { type: 'text', text: ` ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`, size: 'sm', color: '#666666' },
-            { type: 'text', text: `บิลเดือน ${monthLabel}`, weight: 'bold', size: 'xl', wrap: true },
+            {
+              type: 'text',
+              text: ` ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`,
+              size: 'sm',
+              color: '#666666',
+            },
+            {
+              type: 'text',
+              text: `บิลเดือน ${monthLabel}`,
+              weight: 'bold',
+              size: 'xl',
+              wrap: true,
+            },
             {
               type: 'box',
               layout: 'vertical',
@@ -1782,40 +3052,105 @@ export class LineService implements OnModuleInit {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ชื่อ', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: tenantName, size: 'sm', color: '#111111', flex: 0, align: 'end' },
+                    {
+                      type: 'text',
+                      text: 'ชื่อ',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: tenantName,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
                   ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'เบอร์โทรศัพท์', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: tenantPhone, size: 'sm', color: '#111111', flex: 0, align: 'end' },
+                    {
+                      type: 'text',
+                      text: 'เบอร์โทรศัพท์',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: tenantPhone,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
                   ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าเช่า', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.rentAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' },
+                    {
+                      type: 'text',
+                      text: 'ค่าเช่า',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.rentAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
                   ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าน้ำ', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.waterAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' },
+                    {
+                      type: 'text',
+                      text: 'ค่าน้ำ',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.waterAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
                   ],
                 },
                 {
                   type: 'box',
                   layout: 'horizontal',
                   contents: [
-                    { type: 'text', text: 'ค่าไฟ', size: 'sm', color: '#555555', flex: 1 },
-                    { type: 'text', text: `${Number(inv.electricAmount).toLocaleString()} บ.`, size: 'sm', color: '#111111', flex: 0, align: 'end' },
+                    {
+                      type: 'text',
+                      text: 'ค่าไฟ',
+                      size: 'sm',
+                      color: '#555555',
+                      flex: 1,
+                    },
+                    {
+                      type: 'text',
+                      text: `${Number(inv.electricAmount).toLocaleString()} บ.`,
+                      size: 'sm',
+                      color: '#111111',
+                      flex: 0,
+                      align: 'end',
+                    },
                   ],
                 },
               ],
@@ -1826,9 +3161,28 @@ export class LineService implements OnModuleInit {
               layout: 'baseline',
               margin: 'md',
               contents: [
-                { type: 'text', text: '฿', weight: 'bold', size: 'lg', flex: 0, margin: 'sm' },
-                { type: 'text', text: intPart, weight: 'bold', size: 'xxl', flex: 0 },
-                { type: 'text', text: `.${decPart}`, weight: 'bold', size: 'lg', flex: 0 },
+                {
+                  type: 'text',
+                  text: '฿',
+                  weight: 'bold',
+                  size: 'lg',
+                  flex: 0,
+                  margin: 'sm',
+                },
+                {
+                  type: 'text',
+                  text: intPart,
+                  weight: 'bold',
+                  size: 'xxl',
+                  flex: 0,
+                },
+                {
+                  type: 'text',
+                  text: `.${decPart}`,
+                  weight: 'bold',
+                  size: 'lg',
+                  flex: 0,
+                },
               ],
             },
           ],
@@ -1872,7 +3226,8 @@ export class LineService implements OnModuleInit {
     const logoUrl =
       process.env.SLIP_FLEX_LOGO_URL ||
       `${process.env.PUBLIC_API_URL || ''}/api/media/logo.png`;
-    const iconMonth = 'https://cdn-icons-png.freepik.com/512/10691/10691802.png';
+    const iconMonth =
+      'https://cdn-icons-png.freepik.com/512/10691/10691802.png';
     const headerContents: Array<Record<string, unknown>> = [];
     if (logoUrl && logoUrl.startsWith('http')) {
       headerContents.push({
@@ -1901,7 +3256,13 @@ export class LineService implements OnModuleInit {
       contents: headerContents,
     };
     const bodyContents: Array<Record<string, unknown>> = [
-      { type: 'text', text: `ห้อง ${data.room}`, size: 'sm', color: '#666666', wrap: true },
+      {
+        type: 'text',
+        text: `ห้อง ${data.room}`,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+      },
       {
         type: 'box',
         layout: 'horizontal',
@@ -1915,7 +3276,12 @@ export class LineService implements OnModuleInit {
               { type: 'text', text: data.period, weight: 'bold', margin: 'sm' },
             ],
           },
-          { type: 'text', text: `รวม ฿ ${data.amount}`, weight: 'bold', color: '#333333' },
+          {
+            type: 'text',
+            text: `รวม ฿ ${data.amount}`,
+            weight: 'bold',
+            color: '#333333',
+          },
         ],
       },
       { type: 'separator', margin: 'md' },
@@ -1924,17 +3290,32 @@ export class LineService implements OnModuleInit {
         layout: 'vertical',
         spacing: 'xs',
         contents: [
-          { type: 'text', text: data.bankName, color: '#e84e40', weight: 'bold' },
+          {
+            type: 'text',
+            text: data.bankName,
+            color: '#e84e40',
+            weight: 'bold',
+          },
           { type: 'text', text: data.accountName, color: '#e84e40' },
           {
             type: 'text',
             text: data.accountNo,
             color: '#e84e40',
-            action: { type: 'clipboard', label: 'Copy', clipboardText: data.accountNo },
+            action: {
+              type: 'clipboard',
+              label: 'Copy',
+              clipboardText: data.accountNo,
+            },
           },
         ],
       },
-      { type: 'text', text: 'โอนแล้วส่งสลิปใน LINE นี้', wrap: true, size: 'xs', color: '#7f8c8d' },
+      {
+        type: 'text',
+        text: 'โอนแล้วส่งสลิปใน LINE นี้',
+        wrap: true,
+        size: 'xs',
+        color: '#7f8c8d',
+      },
     ];
     return {
       type: 'flex',
@@ -1971,13 +3352,18 @@ export class LineService implements OnModuleInit {
 
   private buildMaintenanceCarouselForStaff(items: any[]) {
     const bubbles = items.map((it) => {
-      const buildingLabel = it.room?.building?.name || it.room?.building?.code || '-';
+      const buildingLabel =
+        it.room?.building?.name || it.room?.building?.code || '-';
       const floor = it.room?.floor ?? '-';
       const roomNo = it.room?.number ?? '-';
       const title = it.title || 'แจ้งซ่อม';
       const desc = (it.description || '').slice(0, 120);
-      const created = new Date(it.createdAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
-      const img = this.extractImageUrl(it.description) || 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+      const created = new Date(it.createdAt).toLocaleString('th-TH', {
+        timeZone: 'Asia/Bangkok',
+      });
+      const img =
+        this.extractImageUrl(it.description) ||
+        'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
       return {
         type: 'bubble',
         hero: {
@@ -1992,11 +3378,33 @@ export class LineService implements OnModuleInit {
           layout: 'vertical',
           spacing: 'sm',
           contents: [
-            { type: 'text', text: `ตึก ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`, size: 'sm', color: '#666666' },
-            { type: 'text', text: title, weight: 'bold', size: 'lg', wrap: true },
-            { type: 'text', text: desc || '-', size: 'sm', color: '#111111', wrap: true },
+            {
+              type: 'text',
+              text: `ตึก ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`,
+              size: 'sm',
+              color: '#666666',
+            },
+            {
+              type: 'text',
+              text: title,
+              weight: 'bold',
+              size: 'lg',
+              wrap: true,
+            },
+            {
+              type: 'text',
+              text: desc || '-',
+              size: 'sm',
+              color: '#111111',
+              wrap: true,
+            },
             { type: 'separator', margin: 'md' },
-            { type: 'text', text: `สร้างเมื่อ ${created}`, size: 'xs', color: '#888888' },
+            {
+              type: 'text',
+              text: `สร้างเมื่อ ${created}`,
+              size: 'xs',
+              color: '#888888',
+            },
           ],
         },
       };
@@ -2032,12 +3440,16 @@ export class LineService implements OnModuleInit {
         this.paymentContextTimers.delete(userId);
       }
     }
-    
 
-    const tenant = await this.prisma.tenant.findFirst({ where: { lineUserId: userId } });
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { lineUserId: userId },
+    });
     const isStaff = this.isStaffUser(userId);
     if (!tenant && !isStaff) {
-      return this.replyText(event.replyToken, 'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>');
+      return this.replyText(
+        event.replyToken,
+        'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
+      );
     }
 
     let contract: any = null;
@@ -2062,7 +3474,13 @@ export class LineService implements OnModuleInit {
       if (
         invoice &&
         !isStaff &&
-        !([InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] as InvoiceStatus[]).includes(invoice.status)
+        !(
+          [
+            InvoiceStatus.SENT,
+            InvoiceStatus.DRAFT,
+            InvoiceStatus.OVERDUE,
+          ] as InvoiceStatus[]
+        ).includes(invoice.status)
       ) {
         invoice = null;
       }
@@ -2076,7 +3494,13 @@ export class LineService implements OnModuleInit {
         invoice = await this.prisma.invoice.findFirst({
           where: {
             contractId: contract.id,
-            status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+            status: {
+              in: [
+                InvoiceStatus.SENT,
+                InvoiceStatus.DRAFT,
+                InvoiceStatus.OVERDUE,
+              ],
+            },
           },
           orderBy: { createdAt: 'desc' },
           include: { payments: true, contract: { include: { room: true } } },
@@ -2088,7 +3512,13 @@ export class LineService implements OnModuleInit {
           invoice = await this.prisma.invoice.findFirst({
             where: {
               contractId: state.contractId,
-              status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+              status: {
+                in: [
+                  InvoiceStatus.SENT,
+                  InvoiceStatus.DRAFT,
+                  InvoiceStatus.OVERDUE,
+                ],
+              },
             },
             orderBy: { createdAt: 'desc' },
             include: { payments: true, contract: { include: { room: true } } },
@@ -2098,7 +3528,10 @@ export class LineService implements OnModuleInit {
             invoice = await this.prisma.invoice.findFirst({
               where: { contractId: state.contractId },
               orderBy: { createdAt: 'desc' },
-              include: { payments: true, contract: { include: { room: true } } },
+              include: {
+                payments: true,
+                contract: { include: { room: true } },
+              },
             });
           }
         } else if (state?.roomId) {
@@ -2111,17 +3544,29 @@ export class LineService implements OnModuleInit {
             invoice = await this.prisma.invoice.findFirst({
               where: {
                 contractId: contract2.id,
-                status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+                status: {
+                  in: [
+                    InvoiceStatus.SENT,
+                    InvoiceStatus.DRAFT,
+                    InvoiceStatus.OVERDUE,
+                  ],
+                },
               },
               orderBy: { createdAt: 'desc' },
-              include: { payments: true, contract: { include: { room: true } } },
+              include: {
+                payments: true,
+                contract: { include: { room: true } },
+              },
             });
             // Fallback: any latest invoice
             if (!invoice) {
               invoice = await this.prisma.invoice.findFirst({
                 where: { contractId: contract2.id },
                 orderBy: { createdAt: 'desc' },
-                include: { payments: true, contract: { include: { room: true } } },
+                include: {
+                  payments: true,
+                  contract: { include: { room: true } },
+                },
               });
             }
           }
@@ -2129,12 +3574,23 @@ export class LineService implements OnModuleInit {
         if (!invoice) {
           // Last resort: pick latest unpaid invoice across all contracts
           invoice = await this.prisma.invoice.findFirst({
-            where: { status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] } },
+            where: {
+              status: {
+                in: [
+                  InvoiceStatus.SENT,
+                  InvoiceStatus.DRAFT,
+                  InvoiceStatus.OVERDUE,
+                ],
+              },
+            },
             orderBy: { createdAt: 'desc' },
             include: { payments: true, contract: { include: { room: true } } },
           });
           if (!invoice) {
-            return this.replyText(event.replyToken, 'กรุณาเลือกห้องที่จะรับชำระก่อน');
+            return this.replyText(
+              event.replyToken,
+              'กรุณาเลือกห้องที่จะรับชำระก่อน',
+            );
           }
           this.setPaymentContextWithTimeout(userId, invoice.id);
         }
@@ -2152,7 +3608,9 @@ export class LineService implements OnModuleInit {
           headers: { Authorization: `Bearer ${this.channelAccessToken}` },
         });
         if (res.ok && res.body) {
-          const stream = Readable.fromWeb(res.body as unknown as NodeReadableStream<Uint8Array>);
+          const stream = Readable.fromWeb(
+            res.body as unknown as NodeReadableStream<Uint8Array>,
+          );
           await pipeline(stream, createWriteStream(filepathTmp));
           const baseUrl =
             process.env.PUBLIC_API_URL ||
@@ -2174,12 +3632,20 @@ export class LineService implements OnModuleInit {
       if (typeof slipAmount === 'number' && isStaff) {
         const state = this.staffPaymentState.get(userId || '');
         const whereBase: any = {
-          status: { in: [InvoiceStatus.SENT, InvoiceStatus.DRAFT, InvoiceStatus.OVERDUE] },
+          status: {
+            in: [
+              InvoiceStatus.SENT,
+              InvoiceStatus.DRAFT,
+              InvoiceStatus.OVERDUE,
+            ],
+          },
         };
         if (state?.contractId) {
           whereBase.contractId = state.contractId;
         } else if (state?.roomId) {
-          const c = await this.prisma.contract.findFirst({ where: { roomId: state.roomId, isActive: true } });
+          const c = await this.prisma.contract.findFirst({
+            where: { roomId: state.roomId, isActive: true },
+          });
           if (c) whereBase.contractId = c.id;
         }
         // Find by amount (allow ±1 THB)
@@ -2276,7 +3742,7 @@ export class LineService implements OnModuleInit {
 
     await this.replyText(
       event.replyToken,
-      `รับสลิปแล้ว ห้อง ${(invoice.contract?.room?.number) || (contract?.room?.number) || '-'} อยู่ระหว่างตรวจสอบ`,
+      `รับสลิปแล้ว ห้อง ${invoice.contract?.room?.number || contract?.room?.number || '-'} อยู่ระหว่างตรวจสอบ`,
     );
 
     const verifyUrl = await this.slipOk.verifyByUrl(
@@ -2322,7 +3788,8 @@ export class LineService implements OnModuleInit {
     const remaining = Number(invoice.totalAmount) - totalPaid;
 
     // Update invoice status if fully paid
-    if (verify.ok && remaining <= 1) { // Allow small diff for rounding
+    if (verify.ok && remaining <= 1) {
+      // Allow small diff for rounding
       await this.prisma.invoice.update({
         where: { id: invoice.id },
         data: { status: InvoiceStatus.PAID },
@@ -2340,16 +3807,18 @@ export class LineService implements OnModuleInit {
       } else {
         // Full payment case
         try {
-          const when =
-            verify.transactedAt
-              ? new Date(verify.transactedAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })
-              : '—';
+          const when = verify.transactedAt
+            ? new Date(verify.transactedAt).toLocaleString('th-TH', {
+                timeZone: 'Asia/Bangkok',
+              })
+            : '—';
           const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
           const dest =
             [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
             '—';
           const amt = paymentAmount.toLocaleString();
-          const roomNum = (invoice.contract?.room?.number) || (contract?.room?.number) || '-';
+          const roomNum =
+            invoice.contract?.room?.number || contract?.room?.number || '-';
           const flex = this.buildSlipFlex('SUCCESS', {
             amount: amt,
             room: roomNum,
@@ -2358,7 +3827,7 @@ export class LineService implements OnModuleInit {
             period,
           });
           setTimeout(() => {
-            this.pushFlex(userId!, flex).catch((e) => {
+            this.pushFlex(userId, flex).catch((e) => {
               this.logger.warn(
                 `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
               );
@@ -2372,19 +3841,21 @@ export class LineService implements OnModuleInit {
       }
     } else if (verify.duplicate) {
       try {
-        const when =
-          verify.transactedAt
-            ? new Date(verify.transactedAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })
-            : '—';
+        const when = verify.transactedAt
+          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
+              timeZone: 'Asia/Bangkok',
+            })
+          : '—';
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
-        const roomNum = (invoice.contract?.room?.number) || (contract?.room?.number) || '-';
+        const roomNum =
+          invoice.contract?.room?.number || contract?.room?.number || '-';
         const flex = this.buildSlipFlex('DUPLICATE', {
           room: roomNum,
           when,
           period,
         });
         setTimeout(() => {
-          this.pushFlex(userId!, flex).catch((e) => {
+          this.pushFlex(userId, flex).catch((e) => {
             this.logger.warn(
               `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
             );
@@ -2397,12 +3868,14 @@ export class LineService implements OnModuleInit {
       }
     } else {
       try {
-        const when =
-          verify.transactedAt
-            ? new Date(verify.transactedAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })
-            : '—';
+        const when = verify.transactedAt
+          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
+              timeZone: 'Asia/Bangkok',
+            })
+          : '—';
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
-        const roomNum = (invoice.contract?.room?.number) || (contract?.room?.number) || '-';
+        const roomNum =
+          invoice.contract?.room?.number || contract?.room?.number || '-';
         const flex = this.buildSlipFlex('INVALID', {
           room: roomNum,
           when,
@@ -2410,7 +3883,7 @@ export class LineService implements OnModuleInit {
           period,
         });
         setTimeout(() => {
-          this.pushFlex(userId!, flex).catch((e) => {
+          this.pushFlex(userId, flex).catch((e) => {
             this.logger.warn(
               `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
             );
@@ -2456,21 +3929,55 @@ export class LineService implements OnModuleInit {
   }
 
   getLinkRequestsByRoom(roomId: string) {
-    return (this.linkRequests.get(roomId) || []).slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return (this.linkRequests.get(roomId) || [])
+      .slice()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   async acceptLink(roomId: string, userId: string, tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
     if (!tenant) return { ok: false };
-    await this.prisma.tenant.update({ where: { id: tenantId }, data: { lineUserId: userId } });
-    const list = (this.linkRequests.get(roomId) || []).filter((r) => !(r.userId === userId && r.tenantId === tenantId));
+    if (tenant.lineUserId) {
+      const listExisting = (this.linkRequests.get(roomId) || []).filter(
+        (r) => !(r.userId === userId && r.tenantId === tenantId),
+      );
+      this.linkRequests.set(roomId, listExisting);
+      if (userId) {
+        if (tenant.lineUserId === userId) {
+          await this.pushMessage(
+            userId,
+            'บัญชี LINE นี้เชื่อมกับหอพักเรียบร้อยแล้ว',
+          );
+        } else {
+          await this.pushMessage(
+            userId,
+            'ห้องนี้มีการเชื่อมบัญชี LINE แล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+          );
+        }
+      }
+      return { ok: false };
+    }
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { lineUserId: userId },
+    });
+    const list = (this.linkRequests.get(roomId) || []).filter(
+      (r) => !(r.userId === userId && r.tenantId === tenantId),
+    );
     this.linkRequests.set(roomId, list);
-    if (userId) await this.pushMessage(userId, 'เชื่อมบัญชี LINE กับหอพักเรียบร้อย');
+    if (userId) {
+      await this.linkMenuForUser(userId, 'TENANT');
+      await this.pushMessage(userId, 'เชื่อมบัญชี LINE กับหอพักเรียบร้อย');
+    }
     return { ok: true };
   }
 
   async rejectLink(roomId: string, userId: string) {
-    const list = (this.linkRequests.get(roomId) || []).filter((r) => r.userId !== userId);
+    const list = (this.linkRequests.get(roomId) || []).filter(
+      (r) => r.userId !== userId,
+    );
     this.linkRequests.set(roomId, list);
     if (userId) await this.pushMessage(userId, 'ยกเลิกคำขอเชื่อมต่อเรียบร้อย');
     return { ok: true };
@@ -2481,7 +3988,10 @@ export class LineService implements OnModuleInit {
     return { ok: true };
   }
 
-  async apiLinkRichMenu(body: { userId: string; kind: 'GENERAL' | 'TENANT' | 'ADMIN' }) {
+  async apiLinkRichMenu(body: {
+    userId: string;
+    kind: 'GENERAL' | 'TENANT' | 'ADMIN';
+  }) {
     await this.linkMenuForUser(body.userId, body.kind);
     return { ok: true };
   }
@@ -2500,7 +4010,7 @@ export class LineService implements OnModuleInit {
       // Fallback for absolute path if projectRoot is not what we expect
       localPath = '/root/line-sisom/richmenu/a.png';
       if (!existsSync(localPath)) {
-         localPath = '/root/line-sisom/richmenu/a.jpg';
+        localPath = '/root/line-sisom/richmenu/a.jpg';
       }
     }
     if (!existsSync(localPath)) {
@@ -2512,14 +4022,28 @@ export class LineService implements OnModuleInit {
       name: 'defualt',
       chatBarText: 'Bulletin',
       areas: [
-        { bounds: { x: 116, y: 132, width: 2272, height: 697 }, action: { type: 'message', text: 'รายละเอียดห้องพัก' } },
-        { bounds: { x: 124, y: 957, width: 664, height: 673 }, action: { type: 'message', text: 'รูปห้องพัก' } },
-        { bounds: { x: 932, y: 965, width: 648, height: 660 }, action: { type: 'message', text: 'ติดต่อสอบถาม' } },
-        { bounds: { x: 1720, y: 953, width: 660, height: 672 }, action: { type: 'message', text: 'REGISTERSISOM' } },
+        {
+          bounds: { x: 116, y: 132, width: 2272, height: 697 },
+          action: { type: 'message', text: 'รายละเอียดห้องพัก' },
+        },
+        {
+          bounds: { x: 124, y: 957, width: 664, height: 673 },
+          action: { type: 'message', text: 'รูปห้องพัก' },
+        },
+        {
+          bounds: { x: 932, y: 965, width: 648, height: 660 },
+          action: { type: 'message', text: 'ติดต่อสอบถาม' },
+        },
+        {
+          bounds: { x: 1720, y: 953, width: 660, height: 672 },
+          action: { type: 'message', text: 'REGISTERSISOM' },
+        },
       ],
     } as any;
-    const createRes = await this.client.createRichMenu(payload as any);
-    const richMenuId = (createRes as any)?.richMenuId || (createRes as unknown as { richMenuId: string }).richMenuId;
+    const createRes = await this.client.createRichMenu(payload);
+    const richMenuId =
+      (createRes as any)?.richMenuId ||
+      (createRes as unknown as { richMenuId: string }).richMenuId;
     const buf = readFileSync(localPath);
     // Skip uploading richmenu image to avoid upstream size limit issues
     const ext = extname(localPath).toLowerCase();
@@ -2550,7 +4074,7 @@ export class LineService implements OnModuleInit {
       // Fallback
       localPath = '/root/line-sisom/richmenu/b.png';
       if (!existsSync(localPath)) {
-         localPath = '/root/line-sisom/richmenu/b.jpg';
+        localPath = '/root/line-sisom/richmenu/b.jpg';
       }
     }
     if (!existsSync(localPath)) {
@@ -2562,20 +4086,44 @@ export class LineService implements OnModuleInit {
       name: 'b',
       chatBarText: 'Bulletin',
       areas: [
-        { bounds: { x: 58, y: 54, width: 718, height: 746 }, action: { type: 'message', text: 'ตรวจสอบค่าเช่า' } },
-        { bounds: { x: 875, y: 70, width: 746, height: 726 }, action: { type: 'message', text: 'เลขบัญชีหอพัก' } },
-        { bounds: { x: 1729, y: 54, width: 730, height: 742 }, action: { type: 'message', text: 'แจ้งย้ายออก' } },
-        { bounds: { x: 45, y: 891, width: 743, height: 755 }, action: { type: 'message', text: '713 ตำบลหนองระเวียง อำเภอเมือง จังหวัดนครราชสีมา 30000' } },
-        { bounds: { x: 883, y: 887, width: 738, height: 738 }, action: { type: 'message', text: 'แจ้งซ่อม' } },
-        { bounds: { x: 1724, y: 908, width: 743, height: 726 }, action: { type: 'message', text: 'เบอร์ติดต่อ 092 426 9477' } },
+        {
+          bounds: { x: 58, y: 54, width: 718, height: 746 },
+          action: { type: 'message', text: 'ตรวจสอบค่าเช่า' },
+        },
+        {
+          bounds: { x: 875, y: 70, width: 746, height: 726 },
+          action: { type: 'message', text: 'เลขบัญชีหอพัก' },
+        },
+        {
+          bounds: { x: 1729, y: 54, width: 730, height: 742 },
+          action: { type: 'message', text: 'แจ้งย้ายออก' },
+        },
+        {
+          bounds: { x: 45, y: 891, width: 743, height: 755 },
+          action: {
+            type: 'message',
+            text: '713 ตำบลหนองระเวียง อำเภอเมือง จังหวัดนครราชสีมา 30000',
+          },
+        },
+        {
+          bounds: { x: 883, y: 887, width: 738, height: 738 },
+          action: { type: 'message', text: 'แจ้งซ่อม' },
+        },
+        {
+          bounds: { x: 1724, y: 908, width: 743, height: 726 },
+          action: { type: 'message', text: 'เบอร์ติดต่อ 092 426 9477' },
+        },
       ],
     } as any;
-    const createRes = await this.client.createRichMenu(payload as any);
-    const richMenuId = (createRes as any)?.richMenuId || (createRes as unknown as { richMenuId: string }).richMenuId;
+    const createRes = await this.client.createRichMenu(payload);
+    const richMenuId =
+      (createRes as any)?.richMenuId ||
+      (createRes as unknown as { richMenuId: string }).richMenuId;
     const buf = readFileSync(localPath);
     if (this.blobClient) {
       const ext = extname(localPath).toLowerCase();
-      const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+      const mimeType =
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
       const blob: any = new Blob([buf], { type: mimeType });
       await this.blobClient.setRichMenuImage(richMenuId, blob);
     }
@@ -2606,7 +4154,7 @@ export class LineService implements OnModuleInit {
       // Fallback
       localPath = '/root/line-sisom/richmenu/c.png';
       if (!existsSync(localPath)) {
-         localPath = '/root/line-sisom/richmenu/c.jpg';
+        localPath = '/root/line-sisom/richmenu/c.jpg';
       }
     }
     if (!existsSync(localPath)) {
@@ -2622,19 +4170,37 @@ export class LineService implements OnModuleInit {
       name: 'c',
       chatBarText: 'Bulletin',
       areas: [
-        { bounds: { x: 12, y: 0, width: 821, height: 825 }, action: { type: 'message', text: 'ห้องค้างชำระ' } },
-        { bounds: { x: 858, y: 12, width: 792, height: 805 }, action: { type: 'uri', uri: meterUrl } },
-        { bounds: { x: 1683, y: 8, width: 809, height: 825 }, action: { type: 'message', text: 'รายการแจ้งซ่อม' } },
-        { bounds: { x: 17, y: 870, width: 1208, height: 805 }, action: { type: 'message', text: 'รับชำระเงิน' } },
-        { bounds: { x: 1283, y: 862, width: 1196, height: 813 }, action: { type: 'message', text: 'แจ้งย้าย' } },
+        {
+          bounds: { x: 12, y: 0, width: 821, height: 825 },
+          action: { type: 'message', text: 'ห้องค้างชำระ' },
+        },
+        {
+          bounds: { x: 858, y: 12, width: 792, height: 805 },
+          action: { type: 'uri', uri: meterUrl },
+        },
+        {
+          bounds: { x: 1683, y: 8, width: 809, height: 825 },
+          action: { type: 'message', text: 'รายการแจ้งซ่อม' },
+        },
+        {
+          bounds: { x: 17, y: 870, width: 1208, height: 805 },
+          action: { type: 'message', text: 'รับชำระเงิน' },
+        },
+        {
+          bounds: { x: 1283, y: 862, width: 1196, height: 813 },
+          action: { type: 'message', text: 'แจ้งย้าย' },
+        },
       ],
     } as any;
-    const createRes = await this.client.createRichMenu(payload as any);
-    const richMenuId = (createRes as any)?.richMenuId || (createRes as unknown as { richMenuId: string }).richMenuId;
+    const createRes = await this.client.createRichMenu(payload);
+    const richMenuId =
+      (createRes as any)?.richMenuId ||
+      (createRes as unknown as { richMenuId: string }).richMenuId;
     const buf = readFileSync(localPath);
     if (this.blobClient) {
       const ext = extname(localPath).toLowerCase();
-      const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+      const mimeType =
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
       const blob: any = new Blob([buf], { type: mimeType });
       await this.blobClient.setRichMenuImage(richMenuId, blob);
     }
@@ -2659,11 +4225,15 @@ export class LineService implements OnModuleInit {
     return { isStaff: this.isStaffUser(userId) };
   }
 
-  async apiMapLineUserRole(body: { userId: string; role: 'STAFF' | 'ADMIN' | 'OWNER' }) {
+  async apiMapLineUserRole(body: {
+    userId: string;
+    role: 'STAFF' | 'ADMIN' | 'OWNER';
+  }) {
     const userId = (body.userId || '').trim();
     const role = body.role;
     if (!userId) return { ok: false, error: 'userId is required' };
-    if (!['STAFF', 'ADMIN', 'OWNER'].includes(role)) return { ok: false, error: 'invalid role' };
+    if (!['STAFF', 'ADMIN', 'OWNER'].includes(role))
+      return { ok: false, error: 'invalid role' };
     const add = (arr: string[]) => {
       if (!arr.includes(userId)) arr.push(userId);
     };
@@ -2673,13 +4243,25 @@ export class LineService implements OnModuleInit {
       add(this.adminUserIds);
       add(this.staffUserIds);
     }
-    return { ok: true, staffCount: this.staffUserIds.length, adminCount: this.adminUserIds.length };
+    return {
+      ok: true,
+      staffCount: this.staffUserIds.length,
+      adminCount: this.adminUserIds.length,
+    };
   }
 
-  async pushRejectFlex(userId: string, room: string, when?: string, reason?: string, period?: string) {
+  async pushRejectFlex(
+    userId: string,
+    room: string,
+    when?: string,
+    reason?: string,
+    period?: string,
+  ) {
     const flex = this.buildSlipFlex('INVALID', {
       room,
-      when: when || new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),
+      when:
+        when ||
+        new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),
       period,
       reason: reason || 'สลิปไม่ถูกต้อง',
     });
@@ -2694,9 +4276,7 @@ export class LineService implements OnModuleInit {
       return typeof m.altText === 'string' ? m.altText : 'n/a';
     })();
     try {
-      this.logger.log(
-        `pushFlex: to=${userId} altText=${altText}`,
-      );
+      this.logger.log(`pushFlex: to=${userId} altText=${altText}`);
     } catch (e) {
       void e;
     }
@@ -2708,7 +4288,14 @@ export class LineService implements OnModuleInit {
 
   private buildSlipFlex(
     status: 'SUCCESS' | 'DUPLICATE' | 'INVALID',
-    data: { amount?: string; room: string; dest?: string; when: string; period?: string; reason?: string },
+    data: {
+      amount?: string;
+      room: string;
+      dest?: string;
+      when: string;
+      period?: string;
+      reason?: string;
+    },
   ) {
     const logoUrl =
       this.getDormLogoUrl() ||
@@ -2718,8 +4305,8 @@ export class LineService implements OnModuleInit {
       status === 'SUCCESS'
         ? { title: 'สลิปถูกต้อง', color: '#2ecc71' }
         : status === 'DUPLICATE'
-        ? { title: 'สลิปซ้ำ', color: '#f1c40f' }
-        : { title: 'สลิปไม่ถูกต้อง', color: '#e74c3c' };
+          ? { title: 'สลิปซ้ำ', color: '#f1c40f' }
+          : { title: 'สลิปไม่ถูกต้อง', color: '#e74c3c' };
     const headerContents: Array<Record<string, unknown>> = [];
     if (logoUrl && logoUrl.startsWith('http')) {
       headerContents.push({
@@ -2757,16 +4344,47 @@ export class LineService implements OnModuleInit {
         wrap: true,
       });
     }
-    rows.push({ type: 'text', text: `ห้อง ${data.room}`, size: 'sm', color: '#666666', wrap: true });
+    rows.push({
+      type: 'text',
+      text: `ห้อง ${data.room}`,
+      size: 'sm',
+      color: '#666666',
+      wrap: true,
+    });
     if (data.dest) {
-      rows.push({ type: 'text', text: `ปลายทาง: ${data.dest}`, size: 'sm', color: '#666666', wrap: true });
+      rows.push({
+        type: 'text',
+        text: `ปลายทาง: ${data.dest}`,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+      });
     }
-    rows.push({ type: 'text', text: `เวลา: ${data.when}`, size: 'sm', color: '#666666', wrap: true });
+    rows.push({
+      type: 'text',
+      text: `เวลา: ${data.when}`,
+      size: 'sm',
+      color: '#666666',
+      wrap: true,
+    });
     if (data.period) {
-      rows.push({ type: 'text', text: `เดือนที่ชำระ: ${data.period}`, size: 'sm', color: '#666666', wrap: true });
+      rows.push({
+        type: 'text',
+        text: `เดือนที่ชำระ: ${data.period}`,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+      });
     }
     if (data.reason && status === 'INVALID') {
-      rows.push({ type: 'text', text: `สาเหตุ: ${data.reason}`, size: 'sm', color: '#666666', wrap: true, maxLines: 5 });
+      rows.push({
+        type: 'text',
+        text: `สาเหตุ: ${data.reason}`,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+        maxLines: 5,
+      });
     }
     const successExtra: Array<Record<string, unknown>> =
       status === 'SUCCESS'
@@ -2806,7 +4424,8 @@ export class LineService implements OnModuleInit {
       if (!existsSync(p)) return undefined;
       const raw = readFileSync(p, 'utf8');
       const parsed = JSON.parse(raw);
-      const url = typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
+      const url =
+        typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
       if (url && /^https?:\/\//.test(url)) return url;
       return undefined;
     } catch {
@@ -2822,8 +4441,11 @@ export class LineService implements OnModuleInit {
     dest?: string,
     period?: string,
   ) {
-    const amtStr = typeof amount === 'number' ? amount.toLocaleString() : undefined;
-    const whenStr = (when || new Date()).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+    const amtStr =
+      typeof amount === 'number' ? amount.toLocaleString() : undefined;
+    const whenStr = (when || new Date()).toLocaleString('th-TH', {
+      timeZone: 'Asia/Bangkok',
+    });
     const flex = this.buildSlipFlex('SUCCESS', {
       amount: amtStr,
       room,
@@ -2850,29 +4472,43 @@ export class LineService implements OnModuleInit {
       process.env.RENT_FLEX_HERO_URL ||
       'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
     const lineUrl = 'https://line.me/';
-    const iconMonth = 'https://cdn-icons-png.freepik.com/512/10691/10691802.png';
+    const iconMonth =
+      'https://cdn-icons-png.freepik.com/512/10691/10691802.png';
     const iconWater = 'https://cdn-icons-png.flaticon.com/512/3105/3105807.png';
     const iconElectric =
       'https://png.pngtree.com/png-vector/20241019/ourmid/pngtree-yellow-lightning-bolt-clipart-energy-power-speed-electric-symbol-icon-png-image_14114467.png';
     const iconRoom =
       'https://icons.veryicon.com/png/o/media/home-furnishing-icon/room-1.png';
     const iconOther = 'https://cdn-icons-png.flaticon.com/512/2454/2454282.png';
-    const iconDiscount = 'https://cdn-icons-png.flaticon.com/512/879/879757.png';
+    const iconDiscount =
+      'https://cdn-icons-png.flaticon.com/512/879/879757.png';
 
     const fmt = (n: number) => `${Number(n).toLocaleString()} บาท`;
     const roomLine =
       data.buildingLabel && data.buildingLabel.trim()
         ? `${data.buildingLabel.trim()} ห้อง ${data.room}`
         : `ห้อง ${data.room}`;
-    
+
     const utilityRows: any[] = [
       {
         type: 'box',
         layout: 'baseline',
         contents: [
           { type: 'icon', url: iconWater },
-          { type: 'text', text: 'ค่าน้ำ', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: fmt(data.waterAmount), size: 'sm', align: 'end', color: '#aaaaaa' },
+          {
+            type: 'text',
+            text: 'ค่าน้ำ',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: fmt(data.waterAmount),
+            size: 'sm',
+            align: 'end',
+            color: '#aaaaaa',
+          },
         ],
       },
       {
@@ -2880,8 +4516,20 @@ export class LineService implements OnModuleInit {
         layout: 'baseline',
         contents: [
           { type: 'icon', url: iconElectric },
-          { type: 'text', text: 'ค่าไฟ', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: fmt(data.electricAmount), size: 'sm', align: 'end', color: '#aaaaaa' },
+          {
+            type: 'text',
+            text: 'ค่าไฟ',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: fmt(data.electricAmount),
+            size: 'sm',
+            align: 'end',
+            color: '#aaaaaa',
+          },
         ],
       },
     ];
@@ -2892,8 +4540,20 @@ export class LineService implements OnModuleInit {
         layout: 'baseline',
         contents: [
           { type: 'icon', url: iconOther },
-          { type: 'text', text: 'ค่าอื่นๆ', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: fmt(data.otherFees), size: 'sm', align: 'end', color: '#aaaaaa' },
+          {
+            type: 'text',
+            text: 'ค่าอื่นๆ',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: fmt(data.otherFees),
+            size: 'sm',
+            align: 'end',
+            color: '#aaaaaa',
+          },
         ],
       });
     }
@@ -2904,8 +4564,20 @@ export class LineService implements OnModuleInit {
         layout: 'baseline',
         contents: [
           { type: 'icon', url: iconDiscount },
-          { type: 'text', text: 'ส่วนลด', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: `-${fmt(data.discount)}`, size: 'sm', align: 'end', color: '#2ecc71' },
+          {
+            type: 'text',
+            text: 'ส่วนลด',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: `-${fmt(data.discount)}`,
+            size: 'sm',
+            align: 'end',
+            color: '#2ecc71',
+          },
         ],
       });
     }
@@ -2922,7 +4594,15 @@ export class LineService implements OnModuleInit {
             layout: 'baseline',
             contents: [
               { type: 'icon', url: iconMonth },
-              { type: 'text', text: 'เดือน', weight: 'bold', margin: 'md', flex: 0, align: 'start', size: 'lg' },
+              {
+                type: 'text',
+                text: 'เดือน',
+                weight: 'bold',
+                margin: 'md',
+                flex: 0,
+                align: 'start',
+                size: 'lg',
+              },
               { type: 'text', text: data.monthLabel, size: 'lg', align: 'end' },
             ],
           },
@@ -2939,21 +4619,48 @@ export class LineService implements OnModuleInit {
         layout: 'baseline',
         contents: [
           { type: 'icon', url: iconRoom },
-          { type: 'text', text: 'ค่าห้อง', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: fmt(data.rentAmount), size: 'sm', align: 'end', color: '#aaaaaa' },
+          {
+            type: 'text',
+            text: 'ค่าห้อง',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: fmt(data.rentAmount),
+            size: 'sm',
+            align: 'end',
+            color: '#aaaaaa',
+          },
         ],
       },
       {
         type: 'box',
         layout: 'baseline',
         contents: [
-          { type: 'text', text: 'รวมทั้งหมด', weight: 'bold', margin: 'sm', flex: 0 },
-          { type: 'text', text: fmt(data.totalAmount), size: 'sm', align: 'end' },
+          {
+            type: 'text',
+            text: 'รวมทั้งหมด',
+            weight: 'bold',
+            margin: 'sm',
+            flex: 0,
+          },
+          {
+            type: 'text',
+            text: fmt(data.totalAmount),
+            size: 'sm',
+            align: 'end',
+          },
         ],
       },
       ...(data.bankInstruction
         ? [
-            { type: 'text', text: data.bankInstruction, color: '#e84e40' } as Record<string, unknown>,
+            {
+              type: 'text',
+              text: data.bankInstruction,
+              color: '#e84e40',
+            } as Record<string, unknown>,
           ]
         : []),
       {
@@ -3005,19 +4712,22 @@ export class LineService implements OnModuleInit {
     };
   }
 
-  async pushRentBillFlex(userId: string, input: {
-    room: string;
-    month: number;
-    year: number;
-    rentAmount: number;
-    waterAmount: number;
-    electricAmount: number;
-    otherFees: number;
-    discount: number;
-    totalAmount: number;
-    buildingLabel?: string;
-    bankInstruction?: string;
-  }) {
+  async pushRentBillFlex(
+    userId: string,
+    input: {
+      room: string;
+      month: number;
+      year: number;
+      rentAmount: number;
+      waterAmount: number;
+      electricAmount: number;
+      otherFees: number;
+      discount: number;
+      totalAmount: number;
+      buildingLabel?: string;
+      bankInstruction?: string;
+    },
+  ) {
     const monthLabel = `${this.thaiMonth(input.month)} ${input.year}`;
     const flex = this.buildRentBillFlex({
       room: input.room,

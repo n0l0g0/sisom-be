@@ -1,4 +1,3 @@
-
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -8,31 +7,31 @@ async function main() {
 
   // 1. Delete inactive contracts
   const deletedContracts = await prisma.contract.deleteMany({
-    where: { isActive: false }
+    where: { isActive: false },
   });
   console.log(`Deleted ${deletedContracts.count} inactive contracts.`);
 
   // 2. Delete tenants with no contracts
   // Note: We need to find them first because deleteMany doesn't support relation filtering directly in all versions or complex conditions easily
   // But we can find IDs first.
-  
+
   const tenantsToDelete = await prisma.tenant.findMany({
     where: {
       contracts: {
-        none: {}
-      }
+        none: {},
+      },
     },
-    select: { id: true }
+    select: { id: true },
   });
 
-  const tenantIds = tenantsToDelete.map(t => t.id);
+  const tenantIds = tenantsToDelete.map((t) => t.id);
   console.log(`Found ${tenantIds.length} tenants with no contracts to delete.`);
 
   if (tenantIds.length > 0) {
     const deletedTenants = await prisma.tenant.deleteMany({
       where: {
-        id: { in: tenantIds }
-      }
+        id: { in: tenantIds },
+      },
     });
     console.log(`Deleted ${deletedTenants.count} tenants.`);
   }

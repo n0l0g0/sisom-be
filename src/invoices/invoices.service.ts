@@ -93,9 +93,16 @@ export class InvoicesService {
       ? Number(dormConfig.commonFee)
       : UTILITY_RATES.COMMON_FEE;
 
-    const electricFeeMethod = dormConfig?.electricFeeMethod ?? WaterFeeMethod.METER_USAGE;
-    const electricMinAmount = Math.max(0, Number(dormConfig?.electricMinAmount ?? 0));
-    const electricMinUnits = Math.max(0, Number(dormConfig?.electricMinUnits ?? 0));
+    const electricFeeMethod =
+      dormConfig?.electricFeeMethod ?? WaterFeeMethod.METER_USAGE;
+    const electricMinAmount = Math.max(
+      0,
+      Number(dormConfig?.electricMinAmount ?? 0),
+    );
+    const electricMinUnits = Math.max(
+      0,
+      Number(dormConfig?.electricMinUnits ?? 0),
+    );
     const computeElectricTieredAmount = (
       u: number,
       tiers: Array<{
@@ -117,7 +124,9 @@ export class InvoicesService {
         .filter((t) => t.unitPrice > 0)
         .map((t) => ({
           uptoUnit:
-            t.uptoUnit !== undefined && Number.isFinite(t.uptoUnit) && t.uptoUnit > 0
+            t.uptoUnit !== undefined &&
+            Number.isFinite(t.uptoUnit) &&
+            t.uptoUnit > 0
               ? t.uptoUnit
               : undefined,
           unitPrice: t.unitPrice,
@@ -157,10 +166,15 @@ export class InvoicesService {
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
       electricAmount = Math.max(eUsage * electricUnitPrice, electricMinAmount);
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_MIN_UNITS) {
-      electricAmount = eUsage <= electricMinUnits ? electricMinAmount : eUsage * electricUnitPrice;
+      electricAmount =
+        eUsage <= electricMinUnits
+          ? electricMinAmount
+          : eUsage * electricUnitPrice;
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE) {
       electricAmount =
-        eUsage <= electricMinUnits ? electricMinAmount : electricMinAmount + (eUsage - electricMinUnits) * electricUnitPrice;
+        eUsage <= electricMinUnits
+          ? electricMinAmount
+          : electricMinAmount + (eUsage - electricMinUnits) * electricUnitPrice;
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_TIERED) {
       const eTiers = Array.isArray(dormConfig?.electricTieredRates)
         ? (dormConfig?.electricTieredRates as Array<{
@@ -173,7 +187,8 @@ export class InvoicesService {
     } else {
       electricAmount = eUsage * electricUnitPrice;
     }
-    const waterFeeMethod = dormConfig?.waterFeeMethod ?? WaterFeeMethod.METER_USAGE;
+    const waterFeeMethod =
+      dormConfig?.waterFeeMethod ?? WaterFeeMethod.METER_USAGE;
     let waterAmount = 0;
     const usage = Math.max(0, waterUsage);
     const unitPrice = Math.max(0, waterUnitPrice);
@@ -201,7 +216,9 @@ export class InvoicesService {
         .filter((t) => t.unitPrice > 0)
         .map((t) => ({
           uptoUnit:
-            t.uptoUnit !== undefined && Number.isFinite(t.uptoUnit) && t.uptoUnit > 0
+            t.uptoUnit !== undefined &&
+            Number.isFinite(t.uptoUnit) &&
+            t.uptoUnit > 0
               ? t.uptoUnit
               : undefined,
           unitPrice: t.unitPrice,
@@ -252,7 +269,9 @@ export class InvoicesService {
       waterAmount = usage <= minUnits ? minAmount : usage * unitPrice;
     } else if (waterFeeMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE) {
       waterAmount =
-        usage <= minUnits ? minAmount : minAmount + (usage - minUnits) * unitPrice;
+        usage <= minUnits
+          ? minAmount
+          : minAmount + (usage - minUnits) * unitPrice;
     } else if (waterFeeMethod === WaterFeeMethod.METER_USAGE_TIERED) {
       const tiers = Array.isArray(dormConfig?.waterTieredRates)
         ? (dormConfig?.waterTieredRates as Array<{
@@ -272,12 +291,14 @@ export class InvoicesService {
 
     const rentAmount = this.round(Number(contract.currentRent));
     const otherFees = this.round(commonFee);
-    
+
     // Ensure all components are rounded
     electricAmount = this.round(electricAmount);
     waterAmount = this.round(waterAmount);
 
-    const totalAmount = this.round(rentAmount + electricAmount + waterAmount + otherFees);
+    const totalAmount = this.round(
+      rentAmount + electricAmount + waterAmount + otherFees,
+    );
 
     const existingInvoice = await this.prisma.invoice.findFirst({
       where: {
@@ -343,7 +364,10 @@ export class InvoicesService {
       });
     }
     if (method === 'DEPOSIT') {
-      const currentDeposit = Math.max(0, Number(invoice.contract?.deposit ?? 0));
+      const currentDeposit = Math.max(
+        0,
+        Number(invoice.contract?.deposit ?? 0),
+      );
       if (currentDeposit < amount) {
         throw new BadRequestException('Insufficient deposit to settle invoice');
       }
@@ -375,7 +399,9 @@ export class InvoicesService {
       });
       const tenant = full?.contract?.tenant;
       if (tenant?.lineUserId && method === 'DEPOSIT') {
-        const contract = await this.prisma.contract.findUnique({ where: { id: invoice.contractId } });
+        const contract = await this.prisma.contract.findUnique({
+          where: { id: invoice.contractId },
+        });
         const depositLeft = Math.max(0, Number(contract?.deposit ?? 0));
         const days = this.lineService.getMoveOutDaysByUserId(tenant.lineUserId);
         await this.lineService.pushMessage(
@@ -395,7 +421,10 @@ export class InvoicesService {
     const electric = this.round(Number(createInvoiceDto.electricAmount));
     const other = this.round(Number(createInvoiceDto.otherFees || 0));
     const discount = this.round(Number(createInvoiceDto.discount || 0));
-    const total = Math.max(0, this.round(rent + water + electric + other - discount));
+    const total = Math.max(
+      0,
+      this.round(rent + water + electric + other - discount),
+    );
 
     return this.prisma.invoice.create({
       data: {
@@ -480,35 +509,36 @@ export class InvoicesService {
   }
 
   update(id: string, updateInvoiceDto: UpdateInvoiceDto) {
-    return this.prisma.invoice.update({
-      where: { id },
-      data: updateInvoiceDto,
-    }).then(async (inv) => {
-      const full = await this.prisma.invoice.findUnique({
+    return this.prisma.invoice
+      .update({
         where: { id },
-        include: { items: true },
-      });
-      if (!full) return inv;
-      const base = this.round(
-        Number(full.rentAmount) +
-        Number(full.waterAmount) +
-        Number(full.electricAmount) +
-        Number(full.otherFees || 0)
-      );
-      const itemsTotal = this.round((full.items || []).reduce(
-        (sum, it) => sum + Number(it.amount),
-        0,
-      ));
-      const discount = this.round(Number(full.discount || 0));
-      const nextTotal = Math.max(0, this.round(base + itemsTotal - discount));
-      if (nextTotal !== Number(full.totalAmount)) {
-        return this.prisma.invoice.update({
+        data: updateInvoiceDto,
+      })
+      .then(async (inv) => {
+        const full = await this.prisma.invoice.findUnique({
           where: { id },
-          data: { totalAmount: nextTotal },
+          include: { items: true },
         });
-      }
-      return inv;
-    });
+        if (!full) return inv;
+        const base = this.round(
+          Number(full.rentAmount) +
+            Number(full.waterAmount) +
+            Number(full.electricAmount) +
+            Number(full.otherFees || 0),
+        );
+        const itemsTotal = this.round(
+          (full.items || []).reduce((sum, it) => sum + Number(it.amount), 0),
+        );
+        const discount = this.round(Number(full.discount || 0));
+        const nextTotal = Math.max(0, this.round(base + itemsTotal - discount));
+        if (nextTotal !== Number(full.totalAmount)) {
+          return this.prisma.invoice.update({
+            where: { id },
+            data: { totalAmount: nextTotal },
+          });
+        }
+        return inv;
+      });
   }
 
   remove(id: string) {
@@ -532,7 +562,9 @@ export class InvoicesService {
     invoiceId: string,
     body: { description: string; amount: number },
   ) {
-    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+    const inv = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+    });
     if (!inv) throw new NotFoundException('Invoice not found');
     const item = await this.prisma.invoiceItem.create({
       data: {
@@ -546,11 +578,13 @@ export class InvoicesService {
     });
     const base = this.round(
       Number(inv.rentAmount) +
-      Number(inv.waterAmount) +
-      Number(inv.electricAmount) +
-      Number(inv.otherFees || 0)
+        Number(inv.waterAmount) +
+        Number(inv.electricAmount) +
+        Number(inv.otherFees || 0),
     );
-    const itemsTotal = this.round(all.reduce((sum, it) => sum + Number(it.amount), 0));
+    const itemsTotal = this.round(
+      all.reduce((sum, it) => sum + Number(it.amount), 0),
+    );
     const discount = this.round(Number(inv.discount || 0));
     const nextTotal = Math.max(0, this.round(base + itemsTotal - discount));
     await this.prisma.invoice.update({
@@ -588,11 +622,13 @@ export class InvoicesService {
       });
       const base = this.round(
         Number(inv.rentAmount) +
-        Number(inv.waterAmount) +
-        Number(inv.electricAmount) +
-        Number(inv.otherFees || 0)
+          Number(inv.waterAmount) +
+          Number(inv.electricAmount) +
+          Number(inv.otherFees || 0),
       );
-      const itemsTotal = this.round(all.reduce((sum, it) => sum + Number(it.amount), 0));
+      const itemsTotal = this.round(
+        all.reduce((sum, it) => sum + Number(it.amount), 0),
+      );
       const discount = this.round(Number(inv.discount || 0));
       const nextTotal = Math.max(0, this.round(base + itemsTotal - discount));
       await this.prisma.invoice.update({
@@ -618,11 +654,13 @@ export class InvoicesService {
       });
       const base = this.round(
         Number(inv.rentAmount) +
-        Number(inv.waterAmount) +
-        Number(inv.electricAmount) +
-        Number(inv.otherFees || 0)
+          Number(inv.waterAmount) +
+          Number(inv.electricAmount) +
+          Number(inv.otherFees || 0),
       );
-      const itemsTotal = this.round(all.reduce((sum, it) => sum + Number(it.amount), 0));
+      const itemsTotal = this.round(
+        all.reduce((sum, it) => sum + Number(it.amount), 0),
+      );
       const discount = this.round(Number(inv.discount || 0));
       const nextTotal = Math.max(0, this.round(base + itemsTotal - discount));
       await this.prisma.invoice.update({
@@ -682,7 +720,11 @@ export class InvoicesService {
   async sendAll(month: number, year: number) {
     const invoices = await this.prisma.invoice.findMany({
       where: { month, year },
-      include: { contract: { include: { tenant: true, room: { include: { building: true } } } } },
+      include: {
+        contract: {
+          include: { tenant: true, room: { include: { building: true } } },
+        },
+      },
     });
     const dormConfig = await this.prisma.dormConfig.findFirst();
     const bankNote = dormConfig?.bankAccount
@@ -702,7 +744,10 @@ export class InvoicesService {
           otherFees: Number(inv.otherFees || 0),
           discount: Number(inv.discount || 0),
           totalAmount: Number(inv.totalAmount),
-          buildingLabel: (room as any)?.building?.name || (room as any)?.building?.code || undefined,
+          buildingLabel:
+            (room as any)?.building?.name ||
+            (room as any)?.building?.code ||
+            undefined,
           bankInstruction: bankNote,
         });
       }

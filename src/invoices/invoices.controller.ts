@@ -104,6 +104,9 @@ export class InvoicesController {
 
   @Post('send-all')
   sendAll(@Body() payload: { month: number; year: number }) {
-    return this.invoicesService.sendAll(Number(payload.month), Number(payload.year));
+    return this.invoicesService.sendAll(
+      Number(payload.month),
+      Number(payload.year),
+    );
   }
 }

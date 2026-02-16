@@ -15,7 +15,11 @@ export class UsersService {
 
     const gen = () => String(Math.floor(100000 + Math.random() * 900000));
     const initialVerify =
-      !rest.lineUserId && rest.phone ? (rest.verifyCode && /^\d{6}$/.test(rest.verifyCode) ? rest.verifyCode : gen()) : undefined;
+      !rest.lineUserId && rest.phone
+        ? rest.verifyCode && /^\d{6}$/.test(rest.verifyCode)
+          ? rest.verifyCode
+          : gen()
+        : undefined;
 
     return this.prisma.user.create({
       data: {

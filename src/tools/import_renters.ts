@@ -72,22 +72,31 @@ async function main() {
   const header = rows[0] || [];
   const headerStr = Array.isArray(header) ? header.join(',') : '';
   const isNewFormat =
-    /ชื่อห้อง/.test(headerStr) || /ชื่อ-นามสกุล/.test(headerStr) || header.length >= 7;
+    /ชื่อห้อง/.test(headerStr) ||
+    /ชื่อ-นามสกุล/.test(headerStr) ||
+    header.length >= 7;
   const startIndex = isNewFormat ? 1 : 4;
   for (let idx = startIndex; idx < rows.length; idx++) {
     const cols = rows[idx];
     const roomRaw = isNewFormat ? String(cols[2] || '').trim() : cols[0];
     if (!roomRaw) continue;
-    const buildingNum = isNewFormat ? Number(String(cols[0] || '').trim()) : undefined;
-    const floorNum = isNewFormat ? Number(String(cols[1] || '').trim()) : undefined;
+    const buildingNum = isNewFormat
+      ? Number(String(cols[0] || '').trim())
+      : undefined;
+    const floorNum = isNewFormat
+      ? Number(String(cols[1] || '').trim())
+      : undefined;
     const groupKey = isNewFormat
       ? `${isFinite(buildingNum!) ? buildingNum : 1}|${roomRaw}`
       : roomRaw;
     const roomNumber = groupKey;
-    const fullName = isNewFormat ? (cols[3] || '') : (cols[1] || '');
-    const nickname = isNewFormat ? (cols[4] || '') : (cols[2] || '');
+    const fullName = isNewFormat ? cols[3] || '' : cols[1] || '';
+    const nickname = isNewFormat ? cols[4] || '' : cols[2] || '';
     // Normalize phone to Thai local format: +66XXXXXXXXX or 66XXXXXXXXX -> 0XXXXXXXXX, ensure leading 0
-    let phoneDigits = (isNewFormat ? (cols[5] || '') : (cols[3] || '')).replace(/[^0-9]/g, '');
+    let phoneDigits = (isNewFormat ? cols[5] || '' : cols[3] || '').replace(
+      /[^0-9]/g,
+      '',
+    );
     if (/^66/.test(phoneDigits)) {
       phoneDigits = '0' + phoneDigits.slice(2);
     }
@@ -95,7 +104,7 @@ async function main() {
       phoneDigits = '0' + phoneDigits;
     }
     const phone = phoneDigits;
-    const idCard = (isNewFormat ? '' : (cols[6] || '').replace(/\s+/g, ''));
+    const idCard = isNewFormat ? '' : (cols[6] || '').replace(/\s+/g, '');
     const startDate = parseDate(isNewFormat ? cols[6] : cols[7]);
     const endDate = parseDate(isNewFormat ? undefined : cols[8]);
     const item = {
@@ -130,8 +139,18 @@ async function main() {
     const records = grouped[rn];
     const inferredBuilding =
       records?.[0]?.building ??
-      (pipeParts ? Number(pipeParts[0]) : digitNameMatch ? Number(digitNameMatch[1]) : slashOnlyMatch ? 1 : rn === '16' ? 1 : Number(rn[0]));
-    const buildingDigit = isFinite(inferredBuilding) ? Number(inferredBuilding) : 1;
+      (pipeParts
+        ? Number(pipeParts[0])
+        : digitNameMatch
+          ? Number(digitNameMatch[1])
+          : slashOnlyMatch
+            ? 1
+            : rn === '16'
+              ? 1
+              : Number(rn[0]));
+    const buildingDigit = isFinite(inferredBuilding)
+      ? Number(inferredBuilding)
+      : 1;
     const inferredFloor = records?.[0]?.floor;
     const buildingCode = `B${buildingDigit}`;
     let building = await prisma.building.findUnique({
@@ -179,7 +198,11 @@ async function main() {
     if (!Number.isNaN(numVal)) {
       if (!seen[key]) seen[key] = new Set<number>();
       seen[key].add(numVal);
-      if (!meta[key]) meta[key] = { buildingId, floor: isFinite(inferredFloor!) ? Number(inferredFloor) : 1 };
+      if (!meta[key])
+        meta[key] = {
+          buildingId,
+          floor: isFinite(inferredFloor!) ? Number(inferredFloor) : 1,
+        };
     }
     // Filter out rows that have only a room number but no occupant information.
     // ตาม requirement: ถ้าเจอห้องที่ไม่มีข้อมูล = ห้องว่าง
@@ -203,23 +226,23 @@ async function main() {
       const bd = b.startDate?.getTime() ?? 0;
       const diff = bd - ad;
       if (diff !== 0) return diff;
-      
+
       // If dates are equal, prefer the one with a phone number
       const aHasPhone = a.phone && a.phone.length > 0;
       const bHasPhone = b.phone && b.phone.length > 0;
       if (aHasPhone && !bHasPhone) return -1;
       if (!aHasPhone && bHasPhone) return 1;
-      
+
       return 0;
     });
     // Create tenants and link contracts:
     // - Latest record becomes the active contract
     // - Older records become inactive contracts (history) to keep linkage
-    
+
     // Pre-fetch existing contracts to prevent duplicates
     const existingContracts = await prisma.contract.findMany({
       where: { roomId: room.id },
-      include: { tenant: true }
+      include: { tenant: true },
     });
 
     for (let idx = 0; idx < validRecords.length; idx++) {
@@ -267,32 +290,45 @@ async function main() {
           }));
       }
 
-      const isActive = idx === 0 && (!rec.endDate || rec.endDate.getTime() > Date.now());
-      
+      const isActive =
+        idx === 0 && (!rec.endDate || rec.endDate.getTime() > Date.now());
+
       // Check if equivalent contract exists
-      const existingMatch = existingContracts.find(c => {
+      const existingMatch = existingContracts.find((c) => {
         if (c.tenantId !== tenant.id) return false;
         // If CSV has start date, require match
         if (rec.startDate) {
-           return Math.abs(c.startDate.getTime() - rec.startDate.getTime()) < 1000;
+          return (
+            Math.abs(c.startDate.getTime() - rec.startDate.getTime()) < 1000
+          );
         }
-        // If CSV has NO start date (generated), assume match if it's the active one 
+        // If CSV has NO start date (generated), assume match if it's the active one
         // or if we just want to avoid duplicating the same tenant with generated dates
-        return true; 
+        return true;
       });
 
       if (existingMatch) {
         // If contract exists, ensure status is correct
         if (isActive && !existingMatch.isActive) {
-           // Reactivate
-           await prisma.contract.update({ where: { id: existingMatch.id }, data: { isActive: true } });
-           // Ensure others are inactive
-           await prisma.contract.updateMany({
-             where: { roomId: room.id, id: { not: existingMatch.id }, isActive: true },
-             data: { isActive: false }
-           });
+          // Reactivate
+          await prisma.contract.update({
+            where: { id: existingMatch.id },
+            data: { isActive: true },
+          });
+          // Ensure others are inactive
+          await prisma.contract.updateMany({
+            where: {
+              roomId: room.id,
+              id: { not: existingMatch.id },
+              isActive: true,
+            },
+            data: { isActive: false },
+          });
         } else if (!isActive && existingMatch.isActive) {
-           await prisma.contract.update({ where: { id: existingMatch.id }, data: { isActive: false } });
+          await prisma.contract.update({
+            where: { id: existingMatch.id },
+            data: { isActive: false },
+          });
         }
         continue;
       }

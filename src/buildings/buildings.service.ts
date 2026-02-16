@@ -49,8 +49,10 @@ export class BuildingsService {
 
     const digits = params.format?.digits === 4 ? 4 : 3;
     const prefix = params.format?.prefix?.trim() || '';
-    const fallbackDigit = (building.code || building.name || '').match(/\d/)?.[0] || '1';
-    const buildingDigit = (params.format?.buildingDigit || fallbackDigit).match(/\d/)?.[0] || '1';
+    const fallbackDigit =
+      (building.code || building.name || '').match(/\d/)?.[0] || '1';
+    const buildingDigit =
+      (params.format?.buildingDigit || fallbackDigit).match(/\d/)?.[0] || '1';
 
     const results: Room[] = [];
     for (const f of params.floors) {

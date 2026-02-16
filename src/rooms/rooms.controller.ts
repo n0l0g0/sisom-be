@@ -39,4 +39,40 @@ export class RoomsController {
   remove(@Param('id') id: string) {
     return this.roomsService.remove(id);
   }
+
+  @Get(':id/contacts')
+  async getContacts(@Param('id') id: string) {
+    const contacts = await this.roomsService.getRoomContacts(id);
+    return { contacts };
+  }
+
+  @Post(':id/contacts')
+  async addContact(
+    @Param('id') id: string,
+    @Body() body: { name?: string; phone?: string },
+  ) {
+    const contacts = await this.roomsService.addRoomContact(id, body);
+    return { contacts };
+  }
+
+  @Post(':id/contacts/:contactId/clear-line')
+  async clearContactLine(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+  ) {
+    const contacts = await this.roomsService.clearRoomContactLine(
+      id,
+      contactId,
+    );
+    return { contacts };
+  }
+
+  @Delete(':id/contacts/:contactId')
+  async deleteContact(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+  ) {
+    const contacts = await this.roomsService.deleteRoomContact(id, contactId);
+    return { contacts };
+  }
 }

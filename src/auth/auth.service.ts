@@ -20,17 +20,16 @@ export class AuthService {
   ): Promise<Omit<User, 'passwordHash'> | null> {
     const user = await this.prisma.user.findUnique({ where: { username } });
     // debug
-    // eslint-disable-next-line no-console
+
     console.log('[auth] validateUser found:', !!user, 'username:', username);
 
     if (user && (await bcrypt.compare(pass, user.passwordHash))) {
-      // eslint-disable-next-line no-console
       console.log('[auth] bcrypt.compare OK for user:', username);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { passwordHash, ...result } = user;
       return result;
     }
-    // eslint-disable-next-line no-console
+
     console.log('[auth] invalid credentials for:', username);
     return null;
   }

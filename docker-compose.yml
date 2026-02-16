@@ -21,6 +21,7 @@ services:
       - "3001:3000"
     volumes:
       - /root/uploads:/app/uploads
+      - /root/room:/root/room
     env_file:
       - ./.env
     depends_on:

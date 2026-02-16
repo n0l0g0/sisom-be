@@ -67,9 +67,11 @@ export class SettingsService {
       const raw = fs.readFileSync(p, 'utf8');
       const parsed = JSON.parse(raw);
       return {
-        logoUrl: typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
+        logoUrl:
+          typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
         mapUrl: typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined,
-        lineLink: typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
+        lineLink:
+          typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
       };
     } catch {
       return {};

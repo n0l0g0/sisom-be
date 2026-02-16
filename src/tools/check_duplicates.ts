@@ -1,4 +1,3 @@
-
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -9,9 +8,9 @@ async function main() {
     where: { name: { contains: 'สาธิต' } },
     include: {
       contracts: {
-        include: { room: true }
-      }
-    }
+        include: { room: true },
+      },
+    },
   });
   console.log(JSON.stringify(tenants, null, 2));
 }

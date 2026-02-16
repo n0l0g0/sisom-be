@@ -1,18 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { readFile } from 'fs/promises';
- 
- type SlipOkResult = {
-   ok: boolean;
-   bankRef?: string;
-   raw?: unknown;
-   message?: string;
+
+type SlipOkResult = {
+  ok: boolean;
+  bankRef?: string;
+  raw?: unknown;
+  message?: string;
   amount?: number;
   destBank?: string;
   destAccount?: string;
   transactedAt?: string;
   duplicate?: boolean;
- };
- 
+};
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
 
@@ -50,24 +50,24 @@ const pickNumber = (
   return undefined;
 };
 
- @Injectable()
- export class SlipOkService {
-   private readonly logger = new Logger(SlipOkService.name);
-   private readonly apiKey = process.env.SLIPOK_API_KEY;
-   private readonly checkUrl =
-     process.env.SLIPOK_CHECK_URL ||
-     'https://api.slipok.com/api/line/apikey/60698';
- 
-   async verifyByUrl(url: string, amount?: number): Promise<SlipOkResult> {
-     if (!this.apiKey) {
-       this.logger.warn('SLIPOK_API_KEY is not set');
-       return { ok: false, message: 'missing api key' };
-     }
-     try {
+@Injectable()
+export class SlipOkService {
+  private readonly logger = new Logger(SlipOkService.name);
+  private readonly apiKey = process.env.SLIPOK_API_KEY;
+  private readonly checkUrl =
+    process.env.SLIPOK_CHECK_URL ||
+    'https://api.slipok.com/api/line/apikey/60698';
+
+  async verifyByUrl(url: string, amount?: number): Promise<SlipOkResult> {
+    if (!this.apiKey) {
+      this.logger.warn('SLIPOK_API_KEY is not set');
+      return { ok: false, message: 'missing api key' };
+    }
+    try {
       const payload: Record<string, unknown> = { url };
-       if (typeof amount === 'number') {
-         payload.amount = amount;
-       }
+      if (typeof amount === 'number') {
+        payload.amount = amount;
+      }
       const res = await fetch(this.checkUrl, {
         method: 'POST',
         headers: {
@@ -78,7 +78,9 @@ const pickNumber = (
       });
       const dataUnknown: unknown = await res.json().catch(() => ({}));
       const data = isRecord(dataUnknown) ? dataUnknown : {};
-      const text = pickString(data, ['message', 'statusText']) || (res.ok ? 'OK' : 'ERROR');
+      const text =
+        pickString(data, ['message', 'statusText']) ||
+        (res.ok ? 'OK' : 'ERROR');
       const ok =
         res.ok &&
         /Correct QR Verification|Valid Amount|OK|success|valid/i.test(
@@ -114,9 +116,9 @@ const pickNumber = (
       const transactedAt =
         pickString(data, ['transactedAt', 'datetime', 'timestamp']) ||
         (date && time ? `${date} ${time}` : undefined);
-       if (!ok) {
-         this.logger.warn(`SlipOK verification failed: ${text}`);
-       }
+      if (!ok) {
+        this.logger.warn(`SlipOK verification failed: ${text}`);
+      }
       return {
         ok,
         bankRef,
@@ -128,12 +130,12 @@ const pickNumber = (
         transactedAt,
         duplicate,
       };
-     } catch (e) {
-       const msg = e instanceof Error ? e.message : String(e);
-       this.logger.warn(`SlipOK request error: ${msg}`);
-       return { ok: false, message: msg };
-     }
-   }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`SlipOK request error: ${msg}`);
+      return { ok: false, message: msg };
+    }
+  }
 
   async verifyByData(filePath: string, amount?: number): Promise<SlipOkResult> {
     if (!this.apiKey) {
@@ -158,7 +160,9 @@ const pickNumber = (
       });
       const dataUnknown: unknown = await res.json().catch(() => ({}));
       const data = isRecord(dataUnknown) ? dataUnknown : {};
-      const text = pickString(data, ['message', 'statusText']) || (res.ok ? 'OK' : 'ERROR');
+      const text =
+        pickString(data, ['message', 'statusText']) ||
+        (res.ok ? 'OK' : 'ERROR');
       const ok =
         res.ok &&
         /Correct QR Verification|Valid Amount|OK|success|valid/i.test(
@@ -214,4 +218,4 @@ const pickNumber = (
       return { ok: false, message: msg };
     }
   }
- }
+}

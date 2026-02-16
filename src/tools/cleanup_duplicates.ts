@@ -1,11 +1,10 @@
-
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Cleaning up duplicate contracts...');
-  
+
   // Get all rooms
   const rooms = await prisma.room.findMany({
     include: {
@@ -13,12 +12,12 @@ async function main() {
         where: {
           // Only look at contracts created recently (during our dev session)
           createdAt: {
-            gte: new Date('2026-02-12T00:00:00Z')
-          }
+            gte: new Date('2026-02-12T00:00:00Z'),
+          },
         },
-        orderBy: { createdAt: 'desc' }
-      }
-    }
+        orderBy: { createdAt: 'desc' },
+      },
+    },
   });
 
   let deletedCount = 0;
@@ -28,18 +27,21 @@ async function main() {
     if (contracts.length <= 1) continue;
 
     // Find the active contract
-    const activeContract = contracts.find(c => c.isActive);
+    const activeContract = contracts.find((c) => c.isActive);
     if (!activeContract) continue;
 
     // Find duplicates (inactive contracts for same tenant)
-    const duplicates = contracts.filter(c => 
-      !c.isActive && 
-      c.tenantId === activeContract.tenantId && 
-      c.id !== activeContract.id
+    const duplicates = contracts.filter(
+      (c) =>
+        !c.isActive &&
+        c.tenantId === activeContract.tenantId &&
+        c.id !== activeContract.id,
     );
 
     for (const dup of duplicates) {
-      console.log(`Deleting duplicate contract ${dup.id} for tenant ${dup.tenantId} in room ${room.number}`);
+      console.log(
+        `Deleting duplicate contract ${dup.id} for tenant ${dup.tenantId} in room ${room.number}`,
+      );
       await prisma.contract.delete({ where: { id: dup.id } });
       deletedCount++;
     }

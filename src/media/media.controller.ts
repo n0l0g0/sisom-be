@@ -92,11 +92,21 @@ export class MediaController {
     const filePath = join(this.mediaService.getUploadDir(), filename);
     res.sendFile(filePath, (err) => {
       if (err) {
-        res.status(404).json({
-          message: 'Not Found',
-          error: 'Not Found',
-          statusCode: 404,
-        });
+        res
+          .status(404)
+          .json({ message: 'Not Found', error: 'Not Found', statusCode: 404 });
+      }
+    });
+  }
+
+  @Get('room/:filename')
+  serveRoom(@Param('filename') filename: string, @Res() res: Response) {
+    const filePath = join(this.mediaService.getRoomDir(), filename);
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        res
+          .status(404)
+          .json({ message: 'Not Found', error: 'Not Found', statusCode: 404 });
       }
     });
   }

@@ -130,8 +130,7 @@ export class ContractsService {
     let updated = 0;
     for (const c of contracts) {
       const rent =
-        Number(c.currentRent ?? 0) ||
-        Number(c.room?.pricePerMonth ?? 0);
+        Number(c.currentRent ?? 0) || Number(c.room?.pricePerMonth ?? 0);
       const target = rent === 3000 ? 3000 : 1000;
       if (Number(c.deposit ?? 0) !== target) {
         await this.prisma.contract.update({
@@ -152,7 +151,11 @@ export class ContractsService {
     let updated = 0;
     for (const c of contracts) {
       const price = Number(c.room?.pricePerMonth ?? 0);
-      if (Number.isFinite(price) && price > 0 && Number(c.currentRent ?? 0) !== price) {
+      if (
+        Number.isFinite(price) &&
+        price > 0 &&
+        Number(c.currentRent ?? 0) !== price
+      ) {
         await this.prisma.contract.update({
           where: { id: c.id },
           data: { currentRent: price },
