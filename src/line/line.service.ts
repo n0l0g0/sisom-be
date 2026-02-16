@@ -449,7 +449,6 @@ export class LineService implements OnModuleInit {
           accountNo: '800-253388-7',
         });
         await this.pushFlex(userId, flex);
-        await this.pushMessage(userId, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
         return null;
       }
       // Move-out flow
@@ -911,7 +910,152 @@ export class LineService implements OnModuleInit {
         accountNo: '800-253388-7',
       });
       await this.pushFlex(userId!, flex);
-      return this.replyText(event.replyToken, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
+      return null;
+    }
+    
+    if (text.includes('รายละเอียดห้องพัก')) {
+      const imgUrl = 'https://line-sisom.washqueue.com/api/media/1770893888834-ost8jv4u95g.png';
+      const getStatusLabel = async (price: number) => {
+        const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
+        const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
+        return { label: vacant > 0 ? 'ว่าง' : 'ไม่ว่าง', total, vacant };
+      };
+      const fan = await getStatusLabel(2100);
+      const fanFurnished = await getStatusLabel(2500);
+      const airFurnished = await getStatusLabel(3000);
+      const carousel: any = {
+        type: 'carousel',
+        contents: [
+          {
+            type: 'bubble',
+            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องพัดลม', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,100บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: fan.label, color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+              ],
+            },
+            footer: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                {
+                  type: 'button',
+                  action: { type: 'message', label: 'รายละเอียด', text: 'ภายในจะมีเพียงพัดลมเพดาน ห้องพัดลมค่าประกัน 1,000 บาท' },
+                  style: 'primary',
+                },
+              ],
+            },
+          },
+          {
+            type: 'bubble',
+            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องพัดลม + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,500 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: fanFurnished.label, color: fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF', flex: 0, margin: 'md', wrap: true },
+              ],
+            },
+            footer: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                {
+                  type: 'button',
+                  action: {
+                    type: 'message',
+                    label: 'Add to Cart',
+                    text: 'ในห้องจะมีโต๊ะกินข้าว ตู้เสื้อผ้า โต๊ะเครื่องแป้ง เตียง แล้วก็ราวตากผ้า ห้องพัดลม + เฟอร์นิเจอร์ค่าประกัน 1,000 บาท',
+                  },
+                  flex: 2,
+                  style: 'primary',
+                },
+              ],
+            },
+          },
+          {
+            type: 'bubble',
+            hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องแอร์ + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '3000 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: airFurnished.label, color: airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+              ],
+            },
+            footer: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                {
+                  type: 'button',
+                  action: {
+                    type: 'message',
+                    label: 'รายละเอียด',
+                    text: 'ภายในห้องจะมีโต๊ะกินข้าว ตู้เสื้อผ้า โต๊ะเครื่องแป้ง เตียง ราวตากผ้า และก็แอร์ ห้องแอร์ค่าประกัน 3,000 บาท',
+                  },
+                  style: 'primary',
+                },
+              ],
+            },
+          },
+        ],
+      };
+      const ratesBubble: any = {
+        type: 'bubble',
+        header: {
+          type: 'box',
+          layout: 'horizontal',
+          contents: [{ type: 'text', text: 'อัตราค่าน้ำ ค่าไฟ', weight: 'bold', size: 'sm', color: '#AAAAAA' }],
+        },
+        hero: {
+          type: 'image',
+          url: imgUrl,
+          size: 'full',
+          aspectRatio: '20:13',
+          aspectMode: 'cover',
+          action: { type: 'uri', label: 'Action', uri: 'https://linecorp.com/' },
+        },
+        body: {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'md',
+          contents: [
+            {
+              type: 'box',
+              layout: 'vertical',
+              flex: 2,
+              contents: [
+                { type: 'text', text: 'ค่าน้ำ 0-5 หน่วย คิดราคาเหมา 35 บาท', flex: 1, gravity: 'top' },
+                { type: 'text', text: 'เกิน 5 หน่วยคิดหน่วยละ 7 บาท', flex: 2, gravity: 'center' },
+                { type: 'separator', margin: 'md', color: '#000000FF' },
+                { type: 'separator', margin: 'xl', color: '#FFFFFFFF' },
+                { type: 'text', text: 'ค่าไฟ คิด หน่วยละ 7 บาท ตั้งแต่เริ่ม', flex: 2, gravity: 'center' },
+                { type: 'separator' },
+              ],
+            },
+          ],
+        },
+      };
+      await this.replyFlex(event.replyToken, carousel);
+      if (userId) {
+        await this.pushFlex(userId, ratesBubble);
+      }
+      return null;
     }
     if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(text)) {
       const variants = this.phoneVariants(text);
@@ -979,7 +1123,11 @@ export class LineService implements OnModuleInit {
           ],
         },
       };
-      return this.replyFlex(event.replyToken, message);
+      const r = await this.replyFlex(event.replyToken, message);
+      if (userId) {
+        await this.pushMessage(userId, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
+      }
+      return r;
     }
 
     if (/ชื่อ-นามสกุล\s*:/i.test(text) && /เลขบัญชี\s*:/i.test(text)) {
@@ -1133,7 +1281,11 @@ export class LineService implements OnModuleInit {
         accountName: 'นาง สุนีย์ วงษ์จะบก',
         accountNo: '800-253388-7',
       });
-      return this.replyFlex(event.replyToken, flex);
+      await this.replyFlex(event.replyToken, flex);
+      if (userId) {
+        await this.pushMessage(userId, 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด');
+      }
+      return null;
     }
 
     if (text === 'ส่งสลิป') {
@@ -1784,6 +1936,7 @@ export class LineService implements OnModuleInit {
         this.paymentContextTimers.delete(userId);
       }
     }
+    
 
     const tenant = await this.prisma.tenant.findFirst({ where: { lineUserId: userId } });
     const isStaff = this.isStaffUser(userId);
