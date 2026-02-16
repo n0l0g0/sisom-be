@@ -1,3 +1,4 @@
+version: "3.3"
 services:
   postgres:
     image: postgres:15-alpine
@@ -16,10 +17,15 @@ services:
     container_name: sisomapt-api
     ports:
       - "3001:3000"
-    environment:
-      DATABASE_URL: postgresql://admin:password@postgres:5432/sisomapt?schema=public
+    env_file:
+      - ./.env
     depends_on:
       - postgres
+    networks:
+      - sisom-net
 
 volumes:
   postgres_data:
+networks:
+  sisom-net:
+    external: true

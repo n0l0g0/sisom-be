@@ -1,7 +1,8 @@
-import { Controller, Post, Headers, Logger, Get, Param, Query, Body } from '@nestjs/common';
+import { Controller, Post, Headers, Logger, Get, Param, Query, Body, Req } from '@nestjs/common';
 import { LineService } from './line.service';
 import type { WebhookRequestBody } from '@line/bot-sdk';
 import * as crypto from 'crypto';
+import type { Request } from 'express';
 
 @Controller('line')
 export class LineController {
@@ -12,6 +13,7 @@ export class LineController {
   async webhook(
     @Body() body: WebhookRequestBody,
     @Headers('x-line-signature') signature: string,
+    @Req() req: Request & { rawBody?: Buffer },
   ) {
     // Validate signature manually if not using middleware globally
     // For simplicity, we trust the service handles verification or we do it here
@@ -20,11 +22,8 @@ export class LineController {
     // Basic Signature Validation
     const channelSecret = process.env.LINE_CHANNEL_SECRET;
     if (channelSecret) {
-      const bodyString = JSON.stringify(body);
-      const expectedSignature = crypto
-        .createHmac('SHA256', channelSecret)
-        .update(bodyString)
-        .digest('base64');
+      const raw = req?.rawBody ?? Buffer.from(JSON.stringify(body));
+      const expectedSignature = crypto.createHmac('SHA256', channelSecret).update(raw).digest('base64');
 
       // Prevent unused var error
       if (signature !== expectedSignature) {
@@ -33,10 +32,6 @@ export class LineController {
         );
       }
 
-      // Note: JSON.stringify might not match exact raw body,
-      // ideally we should use raw body for signature verification.
-      // For this prototype, we'll skip strict verification or rely on proper raw body handling if needed.
-      // But strictly speaking, validating against parsed body is flaky.
     }
 
     const events = body.events;
