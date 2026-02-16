@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateDormConfigDto } from './dto/update-dorm-config.dto';
+import { DormExtraDto } from './dto/dorm-extra.dto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class SettingsService {
@@ -45,5 +48,45 @@ export class SettingsService {
         bankAccount: data.bankAccount,
       },
     });
+  }
+
+  private getExtraFilePath() {
+    const uploadsDir = path.resolve('/app/uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      try {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      } catch {}
+    }
+    return path.join(uploadsDir, 'dorm-extra.json');
+  }
+
+  getDormExtra(): DormExtraDto {
+    try {
+      const p = this.getExtraFilePath();
+      if (!fs.existsSync(p)) return {};
+      const raw = fs.readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      return {
+        logoUrl: typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
+        mapUrl: typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined,
+        lineLink: typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  updateDormExtra(data: DormExtraDto): DormExtraDto {
+    const p = this.getExtraFilePath();
+    const current = this.getDormExtra();
+    const next: DormExtraDto = {
+      logoUrl: data.logoUrl ?? current.logoUrl,
+      mapUrl: data.mapUrl ?? current.mapUrl,
+      lineLink: data.lineLink ?? current.lineLink,
+    };
+    try {
+      fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+    } catch {}
+    return next;
   }
 }

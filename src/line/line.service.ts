@@ -579,9 +579,6 @@ export class LineService implements OnModuleInit {
     const text = event.message.text.trim();
 
     await this.setDefaultRichMenuGeneral();
-    if (this.isStaffUser(userId)) {
-      await this.linkMenuForUser(userId!, 'ADMIN');
-    }
 
     if (text.toUpperCase().startsWith('REGISTERSTAFFSISOM')) {
       const parts = text.trim().split(/\s+/);
@@ -913,8 +910,8 @@ export class LineService implements OnModuleInit {
       return null;
     }
     
-    if (text.includes('รายละเอียดห้องพัก')) {
-      const imgUrl = 'https://line-sisom.washqueue.com/api/media/1770893888834-ost8jv4u95g.png';
+    if (/รายละเอียดหอ(ง)?พัก/.test(text)) {
+      const imgUrl = 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
       const getStatusLabel = async (price: number) => {
         const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
         const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
@@ -923,7 +920,7 @@ export class LineService implements OnModuleInit {
       const fan = await getStatusLabel(2100);
       const fanFurnished = await getStatusLabel(2500);
       const airFurnished = await getStatusLabel(3000);
-      const carousel: any = {
+      const carouselContents: any = {
         type: 'carousel',
         contents: [
           {
@@ -1051,10 +1048,10 @@ export class LineService implements OnModuleInit {
           ],
         },
       };
-      await this.replyFlex(event.replyToken, carousel);
-      if (userId) {
-        await this.pushFlex(userId, ratesBubble);
-      }
+      const priceMessage: any = { type: 'flex', altText: 'รายละเอียดห้องพัก', contents: carouselContents };
+      const ratesMessage: any = { type: 'flex', altText: 'อัตราค่าน้ำ ค่าไฟ', contents: ratesBubble };
+      await this.replyFlex(event.replyToken, priceMessage);
+      if (userId) await this.pushFlex(userId, ratesMessage);
       return null;
     }
     if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(text)) {
