@@ -3,8 +3,8 @@ import { messagingApi, WebhookEvent } from '@line/bot-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SlipOkService } from '../slipok/slipok.service';
-import { createWriteStream } from 'fs';
-import { join } from 'path';
+import { createWriteStream, readFileSync, existsSync } from 'fs';
+import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import type { ReadableStream as NodeReadableStream } from 'stream/web';
@@ -580,6 +580,92 @@ export class LineService implements OnModuleInit {
 
     await this.setDefaultRichMenuGeneral();
 
+    if (/รายละเอียดหอ(ง)?พัก/.test(text)) {
+      const fallbackImg = 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+      const logoUrl = (() => {
+        try {
+          const p = join(resolve('/app/uploads'), 'dorm-extra.json');
+          if (!existsSync(p)) return undefined;
+          const raw = readFileSync(p, 'utf8');
+          const parsed = JSON.parse(raw);
+          const u = typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
+          return u && /^https?:\/\//.test(u) ? u : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      const heroUrl = logoUrl || fallbackImg;
+      const getStatusLabel = async (price: number) => {
+        const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
+        const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
+        return { label: vacant > 0 ? 'ว่าง' : 'ไม่ว่าง', total, vacant };
+      };
+      const fan = await getStatusLabel(2100);
+      const fanFurnished = await getStatusLabel(2500);
+      const airFurnished = await getStatusLabel(3000);
+      const header = logoUrl
+        ? {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'md',
+            alignItems: 'center',
+            contents: [{ type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' }],
+          }
+        : undefined;
+      const carouselContents: any = {
+        type: 'carousel',
+        contents: [
+          {
+            type: 'bubble',
+            ...(header ? { header } : {}),
+            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องพัดลม', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,100บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: fan.label, color: fan.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+              ],
+            },
+          },
+          {
+            type: 'bubble',
+            ...(header ? { header } : {}),
+            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องพัดลม + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '2,500 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: fanFurnished.label, color: fanFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF', flex: 0, margin: 'md', wrap: true },
+              ],
+            },
+          },
+          {
+            type: 'bubble',
+            ...(header ? { header } : {}),
+            hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                { type: 'text', text: 'ห้องแอร์ + เฟอร์นิเจอร์ ', weight: 'bold', size: 'xl', wrap: true },
+                { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: '3000 บาท', weight: 'bold', size: 'xl', flex: 0, wrap: true }] },
+                { type: 'text', text: airFurnished.label, color: airFurnished.label === 'ว่าง' ? '#09A92FFF' : '#FA0000FF' },
+              ],
+            },
+          },
+        ],
+      };
+      const priceMessage: any = { type: 'flex', altText: 'รายละเอียดห้องพัก', contents: carouselContents };
+      await this.replyFlex(event.replyToken, priceMessage);
+      return null;
+    }
     if (text.toUpperCase().startsWith('REGISTERSTAFFSISOM')) {
       const parts = text.trim().split(/\s+/);
       if (parts.length < 2) {
@@ -912,6 +998,7 @@ export class LineService implements OnModuleInit {
     
     if (/รายละเอียดหอ(ง)?พัก/.test(text)) {
       const imgUrl = 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+      const logoUrl = this.getDormLogoUrl();
       const getStatusLabel = async (price: number) => {
         const total = await this.prisma.room.count({ where: { pricePerMonth: price } });
         const vacant = await this.prisma.room.count({ where: { pricePerMonth: price, status: 'VACANT' } });
@@ -920,11 +1007,21 @@ export class LineService implements OnModuleInit {
       const fan = await getStatusLabel(2100);
       const fanFurnished = await getStatusLabel(2500);
       const airFurnished = await getStatusLabel(3000);
+      const header = logoUrl
+        ? {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'md',
+            alignItems: 'center',
+            contents: [{ type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' }],
+          }
+        : undefined;
       const carouselContents: any = {
         type: 'carousel',
         contents: [
           {
             type: 'bubble',
+            ...(header ? { header } : {}),
             hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
             body: {
               type: 'box',
@@ -951,6 +1048,7 @@ export class LineService implements OnModuleInit {
           },
           {
             type: 'bubble',
+            ...(header ? { header } : {}),
             hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
             body: {
               type: 'box',
@@ -982,6 +1080,7 @@ export class LineService implements OnModuleInit {
           },
           {
             type: 'bubble',
+            ...(header ? { header } : {}),
             hero: { type: 'image', url: imgUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' },
             body: {
               type: 'box',
@@ -2612,6 +2711,7 @@ export class LineService implements OnModuleInit {
     data: { amount?: string; room: string; dest?: string; when: string; period?: string; reason?: string },
   ) {
     const logoUrl =
+      this.getDormLogoUrl() ||
       process.env.SLIP_FLEX_LOGO_URL ||
       `${process.env.PUBLIC_API_URL || ''}/api/media/logo.png`;
     const cfg =
@@ -2697,6 +2797,21 @@ export class LineService implements OnModuleInit {
         body,
       },
     };
+  }
+
+  private getDormLogoUrl(): string | undefined {
+    try {
+      const uploadsDir = resolve('/app/uploads');
+      const p = join(uploadsDir, 'dorm-extra.json');
+      if (!existsSync(p)) return undefined;
+      const raw = readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      const url = typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
+      if (url && /^https?:\/\//.test(url)) return url;
+      return undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async pushSuccessFlex(
