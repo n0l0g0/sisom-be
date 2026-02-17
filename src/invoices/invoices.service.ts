@@ -492,6 +492,24 @@ export class InvoicesService {
     });
   }
 
+  findByIds(ids: string[]) {
+    return this.prisma.invoice.findMany({
+      where: {
+        id: {
+          in: ids,
+        },
+      },
+      include: {
+        contract: {
+          include: {
+            room: { include: { building: true } },
+            tenant: true,
+          },
+        },
+      },
+    });
+  }
+
   findOne(id: string) {
     return this.prisma.invoice.findUnique({
       where: { id },

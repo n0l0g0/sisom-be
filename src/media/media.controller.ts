@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync } from 'fs';
 import { extname, join } from 'path';
 import { MediaService } from './media.service';
 import type { Request } from 'express';
@@ -109,5 +109,21 @@ export class MediaController {
           .json({ message: 'Not Found', error: 'Not Found', statusCode: 404 });
       }
     });
+  }
+
+  @Get('rooms')
+  listRooms() {
+    const dir = this.mediaService.getRoomDir();
+    let files: string[] = [];
+    try {
+      files = readdirSync(dir)
+        .filter((f) => /\.(png|jpg|jpeg|gif|webp)$/i.test(f))
+        .sort();
+    } catch {}
+    const items = files.map((filename) => ({
+      filename,
+      url: `/api/media/room/${filename}`,
+    }));
+    return { items };
   }
 }

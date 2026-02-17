@@ -39,7 +39,10 @@ export class InvoicesController {
   }
 
   @Get()
-  findAll(@Query('roomId') roomId?: string) {
+  findAll(@Query('roomId') roomId?: string, @Query('ids') ids?: string) {
+    if (ids) {
+      return this.invoicesService.findByIds(ids.split(','));
+    }
     if (roomId) {
       return this.invoicesService.findByRoom(roomId);
     }

@@ -15,7 +15,12 @@ import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import type { ReadableStream as NodeReadableStream } from 'stream/web';
-import { InvoiceStatus, PaymentStatus, Role } from '@prisma/client';
+import {
+  InvoiceStatus,
+  MaintenanceStatus,
+  PaymentStatus,
+  Role,
+} from '@prisma/client';
 import Jimp from 'jimp';
 
 type LineMessageEvent = Extract<WebhookEvent, { type: 'message' }>;
@@ -120,12 +125,47 @@ export class LineService implements OnModuleInit {
     }
   >();
 
+  private readonly staffMaintenanceState = new Map<
+    string,
+    {
+      maintenanceId: string;
+    }
+  >();
+
+  private getGeneralRichMenuIdFromStore(): string | null {
+    try {
+      const metaPath = join(
+        this.mediaService.getUploadDir(),
+        'richmenu-general.json',
+      );
+      if (!existsSync(metaPath)) return null;
+      const raw = readFileSync(metaPath, 'utf8');
+      if (!raw.trim()) return null;
+      const parsed = JSON.parse(raw);
+      const id =
+        parsed && typeof parsed.richMenuId === 'string'
+          ? parsed.richMenuId.trim()
+          : '';
+      return id || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private getGeneralRichMenuId(): string | null {
+    const stored = this.getGeneralRichMenuIdFromStore();
+    if (stored) return stored;
+    const envId = (this.richMenuGeneralId || '').trim();
+    return envId || null;
+  }
+
   private readonly paymentContextTimers = new Map<string, NodeJS.Timeout>();
   private readonly moveoutTimers = new Map<string, NodeJS.Timeout>();
   private readonly tenantMoveoutTimers = new Map<string, NodeJS.Timeout>();
   private readonly staffPaymentTimers = new Map<string, NodeJS.Timeout>();
   private readonly registerPhoneTimers = new Map<string, NodeJS.Timeout>();
   private readonly tenantMaintenanceTimers = new Map<string, NodeJS.Timeout>();
+  private readonly staffMaintenanceTimers = new Map<string, NodeJS.Timeout>();
 
   private setPaymentContextWithTimeout(userId: string, invoiceId: string) {
     this.paymentContext.set(userId, invoiceId);
@@ -265,6 +305,115 @@ export class LineService implements OnModuleInit {
     if (prev) {
       clearTimeout(prev);
       this.tenantMaintenanceTimers.delete(userId);
+    }
+  }
+
+  private async notifyStaffMaintenanceCreated(maintenanceId: string) {
+    const maintenance = await this.prisma.maintenanceRequest.findUnique({
+      where: { id: maintenanceId },
+      include: {
+        room: {
+          include: {
+            building: true,
+          },
+        },
+      },
+    });
+    if (!maintenance || !maintenance.room) return;
+    const room = maintenance.room;
+    const buildingName = room.building?.name || room.building?.code || '-';
+    const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
+    const descText = maintenance.description || '';
+    const bodyLines = [
+      'มีรายการแจ้งซ่อมใหม่',
+      locationLine,
+      descText,
+      'กรุณาเลือกสถานะปิดงานภายใน 2 นาที',
+    ].filter((v) => v && v.trim().length > 0);
+    const flex: any = {
+      type: 'flex',
+      altText: 'มีรายการแจ้งซ่อมใหม่',
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          contents: bodyLines.map((t) => ({
+            type: 'text',
+            text: t,
+            wrap: true,
+          })),
+        },
+        footer: {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'md',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#00B900',
+              action: {
+                type: 'postback',
+                label: 'เสร็จแล้ว',
+                data: `MAINT_DONE=${maintenance.id}`,
+                displayText: 'ปิดงานแจ้งซ่อม: เสร็จแล้ว',
+              },
+            },
+            {
+              type: 'button',
+              style: 'secondary',
+              color: '#666666',
+              action: {
+                type: 'postback',
+                label: 'ยังไม่เสร็จ',
+                data: `MAINT_NOT_DONE=${maintenance.id}`,
+                displayText: 'ปิดงานแจ้งซ่อม: ยังไม่เสร็จ',
+              },
+            },
+          ],
+        },
+      },
+    };
+    const targets = Array.from(new Set(this.staffUserIds));
+    for (const uid of targets) {
+      if (!uid) continue;
+      this.setStaffMaintenanceState(uid, maintenance.id);
+      await this.pushFlex(uid, flex);
+    }
+  }
+
+  private setStaffMaintenanceState(userId: string, maintenanceId: string) {
+    const key = `${userId}:${maintenanceId}`;
+    this.staffMaintenanceState.set(key, { maintenanceId });
+    const prev = this.staffMaintenanceTimers.get(key);
+    if (prev) {
+      clearTimeout(prev);
+      this.staffMaintenanceTimers.delete(key);
+    }
+    const t = setTimeout(() => {
+      this.staffMaintenanceState.delete(key);
+      this.staffMaintenanceTimers.delete(key);
+      this.pushMessage(
+        userId,
+        'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว',
+      ).catch(() => {});
+    }, 120_000);
+    this.staffMaintenanceTimers.set(key, t);
+  }
+
+  private clearStaffMaintenanceStateForMaintenance(maintenanceId: string) {
+    const entries = Array.from(this.staffMaintenanceState.entries());
+    for (const [key, value] of entries) {
+      if (value.maintenanceId === maintenanceId) {
+        const prev = this.staffMaintenanceTimers.get(key);
+        if (prev) {
+          clearTimeout(prev);
+          this.staffMaintenanceTimers.delete(key);
+        }
+        this.staffMaintenanceState.delete(key);
+      }
     }
   }
 
@@ -464,9 +613,10 @@ export class LineService implements OnModuleInit {
 
   private async setDefaultRichMenuGeneral() {
     if (!this.client) return;
-    if (!this.richMenuGeneralId) return;
+    const generalId = this.getGeneralRichMenuId();
+    if (!generalId) return;
     try {
-      await this.client.setDefaultRichMenu(this.richMenuGeneralId);
+      await this.client.setDefaultRichMenu(generalId);
       this.logger.log('Default Rich Menu set to GENERAL');
     } catch (e) {
       this.logger.warn(
@@ -497,6 +647,17 @@ export class LineService implements OnModuleInit {
     }
   }
 
+  private async unlinkRichMenu(userId: string) {
+    if (!this.client || !userId) return;
+    try {
+      await this.client.unlinkRichMenuIdFromUser(userId);
+    } catch (e) {
+      this.logger.warn(
+        `unlinkRichMenu error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   private async linkMenuForUser(
     userId: string,
     kind: 'GENERAL' | 'TENANT' | 'ADMIN',
@@ -507,18 +668,31 @@ export class LineService implements OnModuleInit {
     if (kind === 'TENANT' && this.richMenuTenantId) {
       return this.linkRichMenu(userId, this.richMenuTenantId);
     }
-    if (kind === 'GENERAL' && this.richMenuGeneralId) {
-      return this.linkRichMenu(userId, this.richMenuGeneralId);
+    if (kind === 'GENERAL') {
+      const generalId = this.getGeneralRichMenuId();
+      if (generalId) {
+        return this.linkRichMenu(userId, generalId);
+      }
     }
   }
 
+  private normalizeUserIdForCompare(userId: string): string {
+    return userId.trim().toLowerCase().replace(/^u/, '');
+  }
   private isAdminUser(userId?: string | null): boolean {
     if (!userId) return false;
-    return this.adminUserIds.includes(userId);
+    const target = this.normalizeUserIdForCompare(userId);
+    return this.adminUserIds.some(
+      (id) => this.normalizeUserIdForCompare(id) === target,
+    );
   }
   private isStaffUser(userId?: string | null): boolean {
     if (!userId) return false;
-    if (this.staffUserIds.includes(userId)) return true;
+    const target = this.normalizeUserIdForCompare(userId);
+    const inStaff = this.staffUserIds.some(
+      (id) => this.normalizeUserIdForCompare(id) === target,
+    );
+    if (inStaff) return true;
     return this.isAdminUser(userId);
   }
 
@@ -533,6 +707,59 @@ export class LineService implements OnModuleInit {
       const params = event.postback?.params as
         | { date?: string; time?: string; datetime?: string }
         | undefined;
+      if (userId && data.startsWith('MAINT_DONE=')) {
+        if (!this.isStaffUser(userId)) return null;
+        const maintenanceId = data.split('=')[1] || '';
+        if (!maintenanceId) return null;
+        const key = `${userId}:${maintenanceId}`;
+        const state = this.staffMaintenanceState.get(key);
+        if (!state) {
+          await this.replyText(
+            event.replyToken,
+            'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว หรือรายการนี้ถูกดำเนินการไปแล้ว',
+          );
+          return null;
+        }
+        this.clearStaffMaintenanceStateForMaintenance(maintenanceId);
+        await this.prisma.maintenanceRequest.update({
+          where: { id: maintenanceId },
+          data: {
+            status: MaintenanceStatus.COMPLETED,
+            resolvedAt: new Date(),
+          },
+        });
+        await this.replyText(
+          event.replyToken,
+          'บันทึกสถานะงานแจ้งซ่อมเป็น เสร็จแล้ว เรียบร้อย',
+        );
+        return null;
+      }
+      if (userId && data.startsWith('MAINT_NOT_DONE=')) {
+        if (!this.isStaffUser(userId)) return null;
+        const maintenanceId = data.split('=')[1] || '';
+        if (!maintenanceId) return null;
+        const key = `${userId}:${maintenanceId}`;
+        const state = this.staffMaintenanceState.get(key);
+        if (!state) {
+          await this.replyText(
+            event.replyToken,
+            'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว หรือรายการนี้ถูกดำเนินการไปแล้ว',
+          );
+          return null;
+        }
+        this.clearStaffMaintenanceStateForMaintenance(maintenanceId);
+        await this.prisma.maintenanceRequest.update({
+          where: { id: maintenanceId },
+          data: {
+            status: MaintenanceStatus.IN_PROGRESS,
+          },
+        });
+        await this.replyText(
+          event.replyToken,
+          'บันทึกสถานะงานแจ้งซ่อมเป็น ยังไม่เสร็จ เรียบร้อย',
+        );
+        return null;
+      }
       if (userId && data === 'TENANT_MOVEOUT_DATE') {
         const date = params?.date;
         if (!date) {
@@ -864,7 +1091,10 @@ export class LineService implements OnModuleInit {
       if (userId && data.startsWith('PAY_ROOM=')) {
         if (!this.isStaffUser(userId)) return null;
         const currentState = this.staffPaymentState.get(userId || '');
-        if (!currentState?.buildingId || typeof currentState.floor !== 'number') {
+        if (
+          !currentState?.buildingId ||
+          typeof currentState.floor !== 'number'
+        ) {
           await this.replyText(
             event.replyToken,
             'หมดเวลาทำรายการชำระบิล หรือยังไม่ได้เลือกตึก/ชั้น กรุณาเริ่มใหม่จากเมนูรับชำระเงิน',
@@ -1061,7 +1291,10 @@ export class LineService implements OnModuleInit {
       if (userId && data.startsWith('MO_ROOM=')) {
         if (!this.isStaffUser(userId)) return null;
         const currentState = this.moveoutState.get(userId || '');
-        if (!currentState?.buildingId || typeof currentState.floor !== 'number') {
+        if (
+          !currentState?.buildingId ||
+          typeof currentState.floor !== 'number'
+        ) {
           await this.replyText(
             event.replyToken,
             'หมดเวลาทำรายการย้ายออก หรือยังไม่ได้เลือกตึก/ชั้น กรุณาพิมพ์ แจ้งย้าย แล้วเลือกตึกและชั้นใหม่อีกครั้ง',
@@ -1089,8 +1322,8 @@ export class LineService implements OnModuleInit {
         });
         const infoText = `แจ้งย้ายออก ห้อง ${contract.room?.number} ${contract.room?.building?.name || contract.room?.building?.code || '-'} ชั้น ${contract.room?.floor}\nผู้เช่า: ${contract.tenant?.name || '-'} โทร ${contract.tenant?.phone || '-'}`;
         await this.pushMessage(userId, infoText);
-        await this.pushMessage(userId, 'กรุณาส่งรูปมิเตอร์น้ำ');
-        this.startMoveoutTimer(userId || '');
+        const bankText = 'กรุณากรอกข้อมูลบัญชีธนาคารของผู้เช่า';
+        await this.pushMessage(userId, bankText);
         return null;
       }
       return Promise.resolve(null);
@@ -1118,6 +1351,66 @@ export class LineService implements OnModuleInit {
 
     const userId = event.source.userId || '';
     const text = event.message.text.trim();
+
+    if (text.toLowerCase() === 'whoami') {
+      if (!userId) {
+        await this.replyText(
+          event.replyToken,
+          'ไม่พบ LINE userId ของคุณ กรุณาลองใหม่อีกครั้ง',
+        );
+        return;
+      }
+      await this.replyText(
+        event.replyToken,
+        `LINE userId ของคุณคือ:\n${userId}`,
+      );
+      return;
+    }
+
+    if (text === 'จดมิเตอร์' || text === 'จดน้ำไฟ') {
+      if (!userId) {
+        await this.replyText(
+          event.replyToken,
+          'ไม่พบ LINE userId ของคุณ กรุณาลองใหม่อีกครั้ง',
+        );
+        return;
+      }
+      const baseUrl =
+        process.env.PUBLIC_API_URL ||
+        process.env.INTERNAL_API_URL ||
+        process.env.API_URL ||
+        'https://line-sisom.washqueue.com';
+      const appBase = baseUrl.replace(/\/+$/, '');
+      const meterUrl = `${appBase}/meter?uid=${encodeURIComponent(userId)}`;
+      await this.replyText(
+        event.replyToken,
+        `เปิดหน้าจดมิเตอร์ได้ที่\n${meterUrl}`,
+      );
+      return;
+    }
+
+    const staffMoveoutState = this.moveoutState.get(userId);
+    if (this.isStaffUser(userId) && staffMoveoutState?.step === 'WATER') {
+      const userId2 = userId;
+      if (userId2) {
+        const prev = this.moveOutRequests.get(userId2) || {
+          requestedAt: new Date(),
+        };
+        const bankInfo = {
+          name: undefined,
+          phone: undefined,
+          accountNo: text,
+          bank: undefined,
+        };
+        this.moveOutRequests.set(userId2, { ...prev, bankInfo });
+        await this.pushMessage(
+          userId2,
+          'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ\nจากนั้นกรุณาส่งรูปมิเตอร์น้ำ',
+        );
+        this.startMoveoutTimer(userId2);
+      }
+      return Promise.resolve(null);
+    }
 
     const pendingMoveout = this.tenantMoveoutRequests.get(userId);
     if (pendingMoveout) {
@@ -1290,7 +1583,7 @@ export class LineService implements OnModuleInit {
         await this.replyFlex(event.replyToken, msg);
         return;
       }
-      if (maintState.step === 'ASK_IMAGE') {
+        if (maintState.step === 'ASK_IMAGE') {
         if (text === 'ไม่ส่งรูปแจ้งซ่อม') {
           this.tenantMaintenanceState.delete(userId);
           this.clearTenantMaintenanceTimer(userId);
@@ -1302,7 +1595,7 @@ export class LineService implements OnModuleInit {
           if (maintState.phone) descParts.push(`PHONE: ${maintState.phone}`);
           const description =
             descParts.length > 0 ? descParts.join('\n') : undefined;
-          await this.prisma.maintenanceRequest.create({
+          const req = await this.prisma.maintenanceRequest.create({
             data: {
               roomId: maintState.roomId,
               title: 'แจ้งซ่อม',
@@ -1314,6 +1607,7 @@ export class LineService implements OnModuleInit {
                 undefined,
             },
           });
+          await this.notifyStaffMaintenanceCreated(req.id);
           await this.replyText(
             event.replyToken,
             'รับเรื่องแจ้งซ่อมเรียบร้อย ระบบจะแจ้งเจ้าหน้าที่ให้ดำเนินการต่อ',
@@ -1337,7 +1631,11 @@ export class LineService implements OnModuleInit {
         return;
       }
       if (maintState.step === 'WAIT_IMAGES') {
-        if (text === 'เสร็จสิ้น' || text === 'ไม่มีรูปเพิ่ม' || text === 'ไม่มีรูปเพิ่มเติม') {
+        if (
+          text === 'เสร็จสิ้น' ||
+          text === 'ไม่มีรูปเพิ่ม' ||
+          text === 'ไม่มีรูปเพิ่มเติม'
+        ) {
           this.tenantMaintenanceState.delete(userId);
           this.clearTenantMaintenanceTimer(userId);
           const descParts: string[] = [];
@@ -1353,7 +1651,7 @@ export class LineService implements OnModuleInit {
           if (maintState.phone) descParts.push(`PHONE: ${maintState.phone}`);
           const description =
             descParts.length > 0 ? descParts.join('\n') : undefined;
-          await this.prisma.maintenanceRequest.create({
+          const req = await this.prisma.maintenanceRequest.create({
             data: {
               roomId: maintState.roomId,
               title: 'แจ้งซ่อม',
@@ -1365,6 +1663,7 @@ export class LineService implements OnModuleInit {
                 undefined,
             },
           });
+          await this.notifyStaffMaintenanceCreated(req.id);
           await this.replyText(
             event.replyToken,
             'รับเรื่องแจ้งซ่อมเรียบร้อย ระบบจะแจ้งเจ้าหน้าที่ให้ดำเนินการต่อ',
@@ -1636,70 +1935,14 @@ export class LineService implements OnModuleInit {
       return null;
     }
     if (text.includes('รูปห้องพัก')) {
-      const logoUrl = (() => {
-        try {
-          const p = join(resolve('/app/uploads'), 'dorm-extra.json');
-          if (!existsSync(p)) return undefined;
-          const raw = readFileSync(p, 'utf8');
-          const parsed = JSON.parse(raw);
-          const u =
-            typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
-          return u && /^https?:\/\//.test(u) ? u : undefined;
-        } catch {
-          return undefined;
-        }
-      })();
-      const roomDir = '/root/room';
-      let files: string[] = [];
-      try {
-        files = readdirSync(roomDir)
-          .filter((f) => /\.(png|jpg|jpeg|gif|webp)$/i.test(f))
-          .sort()
-          .slice(0, 10);
-      } catch {}
-      if (!files.length) {
-        return this.replyText(event.replyToken, 'ยังไม่มีรูปห้องพักที่อัพโหลด');
-      }
-      const base =
-        process.env.PUBLIC_API_URL || process.env.INTERNAL_API_URL || '';
-      const toUrl = (fn: string) =>
-        this.mediaService.buildRoomUrlFromBase(String(base), fn);
-      const header = logoUrl
-        ? {
-            type: 'box',
-            layout: 'horizontal',
-            spacing: 'md',
-            alignItems: 'center',
-            contents: [
-              { type: 'image', url: logoUrl, size: 'sm', aspectMode: 'cover' },
-            ],
-          }
-        : undefined;
-      const bubbles = files.map((f) => ({
-        type: 'bubble',
-        ...(header ? { header } : {}),
-        hero: {
-          type: 'image',
-          url: toUrl(f),
-          size: 'full',
-          aspectRatio: '20:13',
-          aspectMode: 'cover',
-        },
-        body: {
-          type: 'box',
-          layout: 'vertical',
-          spacing: 'sm',
-          contents: [
-            { type: 'text', text: f, size: 'sm', color: '#666666', wrap: true },
-          ],
-        },
-      }));
-      const message: any = {
-        type: 'flex',
-        altText: 'รูปห้องพัก',
-        contents: { type: 'carousel', contents: bubbles },
-      };
-      return this.replyFlex(event.replyToken, message);
+      const galleryUrl =
+        process.env.CMS_GALLERY_URL ||
+        process.env.ROOM_GALLERY_URL ||
+        'https://cms.washqueue.com/gallery';
+      return this.replyText(
+        event.replyToken,
+        `ดูรูปห้องพักได้ที่\n${galleryUrl}`,
+      );
     }
     if (text.toUpperCase().startsWith('REGISTERSTAFFSISOM')) {
       const parts = text.trim().split(/\s+/);
@@ -2716,10 +2959,19 @@ export class LineService implements OnModuleInit {
           requestedAt: new Date(),
         };
         this.moveOutRequests.set(userId2, { ...prev, bankInfo });
-        await this.pushMessage(
-          userId2,
-          'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ',
-        );
+        const staffMoveout = this.moveoutState.get(userId2);
+        if (staffMoveout?.step) {
+          await this.pushMessage(
+            userId2,
+            'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ\nจากนั้นกรุณาส่งรูปมิเตอร์น้ำ',
+          );
+          this.startMoveoutTimer(userId2);
+        } else {
+          await this.pushMessage(
+            userId2,
+            'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ',
+          );
+        }
       }
       return Promise.resolve(null);
     }
@@ -2817,6 +3069,11 @@ export class LineService implements OnModuleInit {
           event.replyToken,
           'ไม่มีรายการแจ้งซ่อมที่รอดำเนินการ',
         );
+      }
+      if (userId) {
+        for (const r of requests) {
+          this.setStaffMaintenanceState(userId, r.id);
+        }
       }
       const carousel = this.buildMaintenanceCarouselForStaff(requests);
       return this.replyFlex(event.replyToken, carousel);
@@ -3609,9 +3866,7 @@ export class LineService implements OnModuleInit {
       );
     }
     this.clearTenantMaintenanceTimer(userId);
-    const filename = `${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2)}.jpg`;
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
     const filepath = join(this.mediaService.getUploadDir(), filename);
     let imgUrl: string | null = null;
     try {
@@ -3654,7 +3909,9 @@ export class LineService implements OnModuleInit {
         'ระบบไม่สามารถบันทึกรูปได้ กรุณาส่งใหม่อีกครั้ง',
       );
     }
-    const currentImages = Array.isArray(state.images) ? state.images.slice() : [];
+    const currentImages = Array.isArray(state.images)
+      ? state.images.slice()
+      : [];
     currentImages.push(imgUrl);
     this.tenantMaintenanceState.set(userId, {
       ...state,
@@ -4274,6 +4531,7 @@ export class LineService implements OnModuleInit {
 
   private buildMaintenanceCarouselForStaff(items: any[]) {
     const bubbles = items.map((it) => {
+      const id = it.id;
       const buildingLabel =
         it.room?.building?.name || it.room?.building?.code || '-';
       const floor = it.room?.floor ?? '-';
@@ -4326,6 +4584,35 @@ export class LineService implements OnModuleInit {
               text: `สร้างเมื่อ ${created}`,
               size: 'xs',
               color: '#888888',
+            },
+          ],
+        },
+        footer: {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'md',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#00B900',
+              action: {
+                type: 'postback',
+                label: 'เสร็จแล้ว',
+                data: `MAINT_DONE=${id}`,
+                displayText: 'ปิดงานแจ้งซ่อม: เสร็จแล้ว',
+              },
+            },
+            {
+              type: 'button',
+              style: 'secondary',
+              color: '#666666',
+              action: {
+                type: 'postback',
+                label: 'ยังไม่เสร็จ',
+                data: `MAINT_NOT_DONE=${id}`,
+                displayText: 'ปิดงานแจ้งซ่อม: ยังไม่เสร็จ',
+              },
             },
           ],
         },
@@ -4888,10 +5175,9 @@ export class LineService implements OnModuleInit {
       const buildingName = room.building?.name || room.building?.code || '-';
       return `- ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     });
-    const msg = [
-      `แจ้งเตือนห้องที่จะย้ายออกในวันที่ ${target}`,
-      ...lines,
-    ].join('\n');
+    const msg = [`แจ้งเตือนห้องที่จะย้ายออกในวันที่ ${target}`, ...lines].join(
+      '\n',
+    );
     const targets = Array.from(new Set(this.staffUserIds));
     for (const uid of targets) {
       if (uid) {
@@ -4965,8 +5251,28 @@ export class LineService implements OnModuleInit {
     userId: string;
     kind: 'GENERAL' | 'TENANT' | 'ADMIN';
   }) {
-    await this.linkMenuForUser(body.userId, body.kind);
-    return { ok: true };
+    const input = (body.userId || '').trim();
+    let targetUid = input;
+    try {
+      // If input is not a LINE user id (doesn't start with 'U'), try to resolve from DB by internal user id
+      const looksLikeLineId = /^U[a-f0-9]{32}$/i.test(input);
+      if (!looksLikeLineId) {
+        const record = await this.prisma.user.findUnique({
+          where: { id: input },
+          select: { lineUserId: true },
+        });
+        if (record?.lineUserId) {
+          targetUid = record.lineUserId;
+        }
+      }
+      await this.linkMenuForUser(targetUid, body.kind);
+      return { ok: true, linkedUserId: targetUid };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   async apiCreateGeneralRichMenuFromLocal() {
@@ -4975,7 +5281,14 @@ export class LineService implements OnModuleInit {
     }
     const { existsSync, copyFileSync, readFileSync } = await import('fs');
     const { join, extname } = await import('path');
-    let localPath = join(this.projectRoot, 'richmenu', 'a.png');
+    const uploadCandidate = join(
+      '/app/uploads',
+      'richmenu-a-1771048926187.png',
+    );
+    let localPath = uploadCandidate;
+    if (!existsSync(localPath)) {
+      localPath = join(this.projectRoot, 'richmenu', 'a.png');
+    }
     if (!existsSync(localPath)) {
       localPath = join(this.projectRoot, 'richmenu', 'a.jpg');
     }
@@ -5001,7 +5314,10 @@ export class LineService implements OnModuleInit {
         },
         {
           bounds: { x: 124, y: 957, width: 664, height: 673 },
-          action: { type: 'message', text: 'รูปห้องพัก' },
+          action: {
+            type: 'uri',
+            uri: 'https://cms.washqueue.com/gallery',
+          },
         },
         {
           bounds: { x: 932, y: 965, width: 648, height: 660 },
@@ -5029,6 +5345,13 @@ export class LineService implements OnModuleInit {
       process.env.API_URL ||
       'https://line-sisom.washqueue.com';
     const imageUrl = this.mediaService.buildUrlFromBase(baseUrl, uploadsName);
+    try {
+      const metaPath = join(
+        this.mediaService.getUploadDir(),
+        'richmenu-general.json',
+      );
+      writeFileSync(metaPath, JSON.stringify({ richMenuId }, null, 2), 'utf8');
+    } catch {}
     await this.setDefaultRichMenu(richMenuId);
     return { ok: true, richMenuId, imageUrl };
   }
@@ -5194,8 +5517,67 @@ export class LineService implements OnModuleInit {
     await this.linkRichMenu(userId, richMenuId);
     return { ok: true };
   }
+  async apiUnlinkRichMenu(body: {
+    userId: string;
+    fallbackTo?: 'GENERAL' | 'TENANT' | 'ADMIN';
+  }) {
+    let targetUid = (body.userId || '').trim();
+    try {
+      const looksLikeLineId = /^U[a-f0-9]{32}$/i.test(targetUid);
+      if (!looksLikeLineId) {
+        const record = await this.prisma.user.findUnique({
+          where: { id: targetUid },
+          select: { lineUserId: true },
+        });
+        if (record?.lineUserId) {
+          targetUid = record.lineUserId;
+        }
+      }
+      await this.unlinkRichMenu(targetUid);
+      if (body.fallbackTo) {
+        await this.linkMenuForUser(targetUid, body.fallbackTo);
+      }
+      return {
+        ok: true,
+        unlinkedUserId: targetUid,
+        fallbackTo: body.fallbackTo ?? null,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
   async apiIsStaff(userId?: string) {
-    return { isStaff: this.isStaffUser(userId) };
+    const uid = (userId || '').trim();
+    if (!uid) return { isStaff: false };
+    try {
+      const variants = (() => {
+        const list = new Set<string>();
+        const base = uid;
+        if (base) list.add(base);
+        const withoutPrefix = base.replace(/^U/i, '');
+        if (withoutPrefix && withoutPrefix !== base) list.add(withoutPrefix);
+        const withPrefix =
+          /^U/i.test(base) || !base ? base : `U${withoutPrefix || base}`;
+        if (withPrefix && withPrefix !== base) list.add(withPrefix);
+        return Array.from(list);
+      })();
+      const user = await this.prisma.user.findFirst({
+        where: { lineUserId: { in: variants } },
+        select: { role: true, permissions: true },
+      });
+      const byRole = !!user && (user.role === 'OWNER' || user.role === 'ADMIN');
+      const byPerm =
+        !!user &&
+        Array.isArray(user.permissions) &&
+        user.permissions.includes('meter');
+      const byEnv = this.isStaffUser(uid);
+      return { isStaff: Boolean(byRole || byPerm || byEnv) };
+    } catch {
+      return { isStaff: this.isStaffUser(uid) };
+    }
   }
 
   async apiMapLineUserRole(body: {
@@ -5427,6 +5809,87 @@ export class LineService implements OnModuleInit {
       period,
     });
     return this.pushFlex(userId, flex);
+  }
+
+  async notifyStaffPaymentSuccess(params: {
+    room: string;
+    amount?: number;
+    period?: string;
+    paidAt?: Date;
+    tenantName?: string;
+  }) {
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.ADMIN, Role.OWNER] },
+        lineUserId: { not: null },
+      },
+      select: { lineUserId: true },
+    });
+    const targets = Array.from(
+      new Set(
+        users
+          .map((u) => u.lineUserId)
+          .filter(
+            (id): id is string => typeof id === 'string' && id.length > 0,
+          ),
+      ),
+    );
+    if (!targets.length) return;
+    const paidAt = params.paidAt || new Date();
+    const whenStr = paidAt.toLocaleString('th-TH', {
+      timeZone: 'Asia/Bangkok',
+    });
+    const amountStr =
+      typeof params.amount === 'number'
+        ? params.amount.toLocaleString('th-TH', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })
+        : undefined;
+    const header = 'แจ้งเตือนการชำระเงินค่าเช่าผ่านระบบแล้ว';
+    const lines = [
+      params.tenantName && params.tenantName.trim()
+        ? `ผู้เช่า: ${params.tenantName.trim()}`
+        : undefined,
+      `ห้อง: ${params.room}`,
+      params.period ? `รอบบิล: ${params.period}` : undefined,
+      amountStr ? `ยอดที่ชำระ: ${amountStr} บาท` : undefined,
+      `เวลา: ${whenStr}`,
+    ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+    const contents: Array<Record<string, unknown>> = [
+      {
+        type: 'text',
+        text: header,
+        weight: 'bold',
+        size: 'md',
+        wrap: true,
+      },
+      ...lines.map((text) => ({
+        type: 'text',
+        text,
+        size: 'sm',
+        wrap: true,
+      })),
+    ];
+    const flex = {
+      type: 'flex',
+      altText: header,
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '12px',
+          spacing: 'sm',
+          contents,
+        },
+      },
+    };
+    for (const uid of targets) {
+      if (uid) {
+        await this.pushFlex(uid, flex);
+      }
+    }
   }
 
   private buildRentBillFlex(data: {

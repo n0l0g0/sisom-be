@@ -16,8 +16,7 @@ export class UsersService {
       username: rest.username.trim(),
       phone: rest.phone?.trim() || undefined,
       lineUserId:
-        typeof rest.lineUserId === 'string' &&
-        rest.lineUserId.trim().length > 0
+        typeof rest.lineUserId === 'string' && rest.lineUserId.trim().length > 0
           ? rest.lineUserId.trim()
           : undefined,
     };
@@ -41,12 +40,17 @@ export class UsersService {
         },
       });
     } catch (e: unknown) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
         const target = Array.isArray(e.meta?.target)
           ? (e.meta?.target as string[])[0]
           : (e.meta?.target as string | undefined);
         if (target === 'lineUserId') {
-          throw new BadRequestException('LINE User ID นี้ถูกใช้แล้วกับผู้ใช้งานอื่น');
+          throw new BadRequestException(
+            'LINE User ID นี้ถูกใช้แล้วกับผู้ใช้งานอื่น',
+          );
         }
         if (target === 'username') {
           throw new BadRequestException('ชื่อผู้ใช้งานนี้ถูกใช้แล้ว');

@@ -98,9 +98,12 @@ export class PaymentsService {
       // Send Flex (Green) - ตัดยอดเรียบร้อย
       const tenant = payment.invoice?.contract?.tenant;
       const room = payment.invoice?.contract?.room?.number;
-      const period = payment.invoice
-        ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
-        : undefined;
+      const period =
+        payment.invoice &&
+        typeof payment.invoice.month === 'number' &&
+        typeof payment.invoice.year === 'number'
+          ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
+          : undefined;
       if (tenant && tenant.lineUserId && room) {
         await this.lineService.pushSuccessFlex(
           tenant.lineUserId,
@@ -110,6 +113,15 @@ export class PaymentsService {
           undefined,
           period,
         );
+      }
+      if (room) {
+        await this.lineService.notifyStaffPaymentSuccess({
+          room,
+          amount: Number(payment.amount),
+          period,
+          paidAt,
+          tenantName: tenant?.name || undefined,
+        });
       }
     }
     if (updatePaymentDto.status === PaymentStatus.REJECTED) {

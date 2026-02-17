@@ -105,6 +105,16 @@ export class LineController {
   async linkRichMenuById(@Body() body: { userId: string; richMenuId: string }) {
     return this.lineService.apiLinkRichMenuById(body.userId, body.richMenuId);
   }
+  @Post('richmenu/unlink')
+  async unlinkRichMenu(
+    @Body()
+    body: {
+      userId: string;
+      fallbackTo?: 'GENERAL' | 'TENANT' | 'ADMIN';
+    },
+  ) {
+    return this.lineService.apiUnlinkRichMenu(body);
+  }
 
   @Post('richmenu/create-general-from-local')
   async createGeneralFromLocal() {
