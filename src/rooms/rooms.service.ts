@@ -26,6 +26,16 @@ export class RoomsService {
     return path.join(uploadsDir, 'room-contacts.json');
   }
 
+  private getSchedulesFilePath() {
+    const uploadsDir = path.resolve('/app/uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      try {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      } catch {}
+    }
+    return path.join(uploadsDir, 'room-payment-schedule.json');
+  }
+
   private readContactsStore(): Record<
     string,
     Array<{ id: string; name: string; phone: string; lineUserId?: string }>
@@ -54,6 +64,38 @@ export class RoomsService {
   ) {
     try {
       const p = this.getContactsFilePath();
+      fs.writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
+    } catch {}
+  }
+
+  private readSchedulesStore(): Record<
+    string,
+    { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+  > {
+    try {
+      const p = this.getSchedulesFilePath();
+      if (!fs.existsSync(p)) return {};
+      const raw = fs.readFileSync(p, 'utf8');
+      if (!raw.trim()) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      return parsed as Record<
+        string,
+        { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+      >;
+    } catch {
+      return {};
+    }
+  }
+
+  private writeSchedulesStore(
+    store: Record<
+      string,
+      { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+    >,
+  ) {
+    try {
+      const p = this.getSchedulesFilePath();
       fs.writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
     } catch {}
   }
@@ -274,5 +316,47 @@ export class RoomsService {
     return this.prisma.room.delete({
       where: { id },
     });
+  }
+
+  async getRoomPaymentSchedule(roomId: string) {
+    const store = this.readSchedulesStore() || {};
+    const s = store[roomId] || null;
+    return s;
+  }
+
+  async setRoomPaymentSchedule(
+    roomId: string,
+    payload: { date?: string; monthly?: boolean },
+  ) {
+    const room = await this.prisma.room.findUnique({
+      where: { id: roomId },
+      select: { id: true },
+    });
+    if (!room) {
+      throw new NotFoundException('room not found');
+    }
+    const dateStr = (payload.date || '').trim();
+    if (!dateStr) {
+      throw new BadRequestException('date is required');
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) {
+      throw new BadRequestException('invalid date');
+    }
+    const monthly = !!payload.monthly;
+    const store = this.readSchedulesStore() || {};
+    const updatedAt = new Date().toISOString();
+    if (monthly) {
+      const day = d.getUTCDate();
+      store[roomId] = { monthlyDay: day, oneTimeDate: undefined, updatedAt };
+    } else {
+      store[roomId] = { oneTimeDate: d.toISOString(), monthlyDay: undefined, updatedAt };
+    }
+    this.writeSchedulesStore(store);
+    return store[roomId];
+  }
+
+  async listRoomPaymentSchedules() {
+    return this.readSchedulesStore() || {};
   }
 }

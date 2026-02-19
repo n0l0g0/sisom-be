@@ -75,4 +75,25 @@ export class RoomsController {
     const contacts = await this.roomsService.deleteRoomContact(id, contactId);
     return { contacts };
   }
+
+  @Get(':id/payment-schedule')
+  async getPaymentSchedule(@Param('id') id: string) {
+    const schedule = await this.roomsService.getRoomPaymentSchedule(id);
+    return { schedule };
+  }
+
+  @Post(':id/payment-schedule')
+  async setPaymentSchedule(
+    @Param('id') id: string,
+    @Body() body: { date?: string; monthly?: boolean },
+  ) {
+    const schedule = await this.roomsService.setRoomPaymentSchedule(id, body);
+    return { schedule };
+  }
+
+  @Get('payment-schedules')
+  async listPaymentSchedules() {
+    const schedules = await this.roomsService.listRoomPaymentSchedules();
+    return { schedules };
+  }
 }
