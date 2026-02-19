@@ -2,11 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMaintenanceDto } from './dto/create-maintenance.dto';
 import { UpdateMaintenanceDto } from './dto/update-maintenance.dto';
-import { RoomStatus } from '@prisma/client';
+import { MaintenanceStatus, RoomStatus } from '@prisma/client';
+import { LineService } from '../line/line.service';
 
 @Injectable()
 export class MaintenanceService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private lineService: LineService,
+  ) {}
 
   async create(createMaintenanceDto: CreateMaintenanceDto) {
     const maintenanceRequest = await this.prisma.maintenanceRequest.create({
@@ -53,16 +57,43 @@ export class MaintenanceService {
     });
   }
 
-  update(id: string, updateMaintenanceDto: UpdateMaintenanceDto) {
+  async update(id: string, updateMaintenanceDto: UpdateMaintenanceDto) {
+    const prev = await this.prisma.maintenanceRequest.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+
     const { resolvedAt, ...rest } = updateMaintenanceDto;
     const data = {
       ...rest,
       ...(resolvedAt ? { resolvedAt: new Date(resolvedAt) } : {}),
+      ...(updateMaintenanceDto.status === MaintenanceStatus.COMPLETED &&
+      !resolvedAt
+        ? { resolvedAt: new Date() }
+        : {}),
     };
-    return this.prisma.maintenanceRequest.update({
+
+    const updated = await this.prisma.maintenanceRequest.update({
       where: { id },
       data,
     });
+
+    if (
+      prev &&
+      prev.status !== MaintenanceStatus.COMPLETED &&
+      updated.status === MaintenanceStatus.COMPLETED
+    ) {
+      this.lineService
+        .notifyTenantMaintenanceCompleted(updated.id)
+        .catch((err) => {
+          console.error(
+            '[maintenance] Failed to notify tenant maintenance completed',
+            err,
+          );
+        });
+    }
+
+    return updated;
   }
 
   remove(id: string) {

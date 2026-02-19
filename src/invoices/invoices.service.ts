@@ -711,19 +711,21 @@ export class InvoicesService {
       const bankNote = dormConfig?.bankAccount
         ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
         : undefined;
-      await this.lineService.pushRentBillFlex(tenant.lineUserId, {
-        room: room.number,
-        month: invoice.month,
-        year: invoice.year,
-        rentAmount: Number(invoice.rentAmount),
-        waterAmount: Number(invoice.waterAmount),
-        electricAmount: Number(invoice.electricAmount),
-        otherFees: Number(invoice.otherFees || 0),
-        discount: Number(invoice.discount || 0),
-        totalAmount: Number(invoice.totalAmount),
-        buildingLabel: room.building?.name || room.building?.code || undefined,
-        bankInstruction: bankNote,
-      });
+      if (tenant.lineUserId) {
+        await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+          room: room.number,
+          month: invoice.month,
+          year: invoice.year,
+          rentAmount: Number(invoice.rentAmount),
+          waterAmount: Number(invoice.waterAmount),
+          electricAmount: Number(invoice.electricAmount),
+          otherFees: Number(invoice.otherFees || 0),
+          discount: Number(invoice.discount || 0),
+          totalAmount: Number(invoice.totalAmount),
+          buildingLabel: room.building?.name || room.building?.code || undefined,
+          bankInstruction: bankNote,
+        });
+      }
     }
     const updated = await this.prisma.invoice.update({
       where: { id },

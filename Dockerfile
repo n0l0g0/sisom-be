@@ -16,6 +16,7 @@ RUN npm run build
 FROM public.ecr.aws/docker/library/node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apk add --no-cache postgresql-client
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/prisma ./prisma
 RUN npm install --omit=dev && npx prisma generate

@@ -417,6 +417,256 @@ export class LineService implements OnModuleInit {
     }
   }
 
+  createInvoiceFlexMessage(invoice: any, room: any, tenant: any) {
+    const liffUrl = `https://liff.line.me/${this.liffId}/bills/${invoice.id}`;
+    const monthName = new Date(invoice.year, invoice.month - 1).toLocaleString(
+      'th-TH',
+      { month: 'long', year: 'numeric' },
+    );
+
+    return {
+      type: 'flex',
+      altText: `แจ้งยอดค่าห้องประจำเดือน ${monthName}`,
+      contents: {
+        type: 'bubble',
+        header: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            {
+              type: 'text',
+              text: 'แจ้งยอดค่าห้อง',
+              weight: 'bold',
+              size: 'xl',
+              color: '#FFFFFF',
+            },
+            {
+              type: 'text',
+              text: monthName,
+              size: 'sm',
+              color: '#FFFFFFCC',
+            },
+          ],
+          backgroundColor: '#FF6413',
+        },
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          contents: [
+            {
+              type: 'box',
+              layout: 'vertical',
+              contents: [
+                {
+                  type: 'text',
+                  text: `ห้อง ${room.number}`,
+                  size: 'lg',
+                  weight: 'bold',
+                },
+                {
+                  type: 'text',
+                  text: `ผู้เช่า: ${tenant.name}`,
+                  size: 'sm',
+                  color: '#555555',
+                },
+              ],
+            },
+            {
+              type: 'separator',
+            },
+            {
+              type: 'box',
+              layout: 'vertical',
+              spacing: 'sm',
+              contents: [
+                this.createDetailRow('ค่าเช่า', invoice.rentAmount),
+                this.createDetailRow('ค่าน้ำ', invoice.waterAmount),
+                this.createDetailRow('ค่าไฟ', invoice.electricAmount),
+                this.createDetailRow('ค่าส่วนกลาง', invoice.otherFees),
+              ],
+            },
+            {
+              type: 'separator',
+            },
+            {
+              type: 'box',
+              layout: 'horizontal',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ยอดรวม',
+                  weight: 'bold',
+                  size: 'lg',
+                },
+                {
+                  type: 'text',
+                  text: `฿${Number(invoice.totalAmount).toLocaleString()}`,
+                  weight: 'bold',
+                  size: 'lg',
+                  align: 'end',
+                },
+              ],
+            },
+          ],
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            {
+              type: 'button',
+              action: {
+                type: 'uri',
+                label: 'ดูรายละเอียดและชำระเงิน',
+                uri: liffUrl,
+              },
+              style: 'primary',
+              color: '#FF6413',
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  private createDetailRow(label: string, amount: number) {
+    return {
+      type: 'box',
+      layout: 'horizontal',
+      contents: [
+        {
+          type: 'text',
+          text: label,
+          size: 'sm',
+          color: '#555555',
+        },
+        {
+          type: 'text',
+          text: `฿${Number(amount).toLocaleString()}`,
+          size: 'sm',
+          color: '#111111',
+          align: 'end',
+        },
+      ],
+    };
+  }
+
+  logError(message: string, meta?: any) {
+    this.logger.error(message, meta);
+  }
+
+
+
+  async notifyTenantMaintenanceCompleted(maintenanceId: string) {
+    const maintenance = await this.prisma.maintenanceRequest.findUnique({
+      where: { id: maintenanceId },
+      include: {
+        room: {
+          include: {
+            building: true,
+            contracts: {
+              where: { isActive: true },
+              include: { tenant: true },
+              orderBy: { startDate: 'desc' },
+            },
+          },
+        },
+      },
+    });
+    if (!maintenance || !maintenance.room) return;
+    const room: any = maintenance.room;
+    const contracts: any[] = Array.isArray(room.contracts)
+      ? room.contracts
+      : [];
+    const active =
+      contracts.find((c) => c.isActive && c.tenant?.lineUserId) || contracts[0];
+    const tenant = active?.tenant;
+    const lineUserId: string | undefined = tenant?.lineUserId || undefined;
+    if (!lineUserId) return;
+
+    const buildingName = room.building?.name || room.building?.code || '';
+    const locationLine = buildingName
+      ? `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`
+      : `ห้อง ${room.number}`;
+    const title = maintenance.title || 'แจ้งซ่อม';
+    const descFirstLine = (maintenance.description || '')
+      .split('\n')
+      .find((s) => s.trim().length > 0);
+
+    const flex: any = {
+      type: 'flex',
+      altText: 'งานแจ้งซ่อมเสร็จเรียบร้อยแล้ว',
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: [
+            {
+              type: 'box',
+              layout: 'baseline',
+              spacing: 'sm',
+              contents: [
+                {
+                  type: 'text',
+                  text: '🔧 งานแจ้งซ่อมเสร็จแล้ว',
+                  weight: 'bold',
+                  size: 'md',
+                  color: '#00B900',
+                  wrap: true,
+                },
+              ],
+            },
+            {
+              type: 'text',
+              text: locationLine,
+              size: 'sm',
+              color: '#555555',
+              wrap: true,
+              margin: 'md',
+            },
+            {
+              type: 'text',
+              text: `รายการ: ${title}`,
+              size: 'sm',
+              color: '#333333',
+              wrap: true,
+              margin: 'sm',
+            },
+            ...(descFirstLine
+              ? [
+                  {
+                    type: 'text',
+                    text: descFirstLine,
+                    size: 'sm',
+                    color: '#555555',
+                    wrap: true,
+                    margin: 'sm',
+                  },
+                ]
+              : []),
+            {
+              type: 'separator',
+              margin: 'md',
+            },
+            {
+              type: 'text',
+              text: 'หากยังพบปัญหาเดิม สามารถกดเมนู “แจ้งซ่อม” เพื่อส่งคำขอใหม่ได้ทุกเมื่อครับ',
+              size: 'xs',
+              color: '#888888',
+              wrap: true,
+              margin: 'md',
+            },
+          ],
+        },
+      },
+    };
+
+    await this.pushFlex(lineUserId, flex);
+  }
+
   private hasBlockingFlow(userId: string): boolean {
     if (!userId) return false;
     if (this.paymentContext.get(userId)) return true;
@@ -483,15 +733,25 @@ export class LineService implements OnModuleInit {
     });
 
     if (!tenant) {
-      return this.replyText(replyToken, 'Phone number not found in system.');
+      const message = [
+        'ไม่พบข้อมูลในระบบ',
+        '',
+        'หากมีการเปลี่ยนเบอร์โทร กรุณาเขียนเบอร์ใหม่ลงบนบิลค่าเช่า แล้วถ่ายรูปส่งกลับทางไลน์',
+        '',
+        'หากต้องการเพิ่มผู้เชื่อมต่อ กรุณาเขียนชื่อ–เบอร์โทร ลงบนบิล แล้วถ่ายรูปส่งมาอีกครั้ง',
+      ].join('\n');
+      return this.replyText(replyToken, message);
     }
 
     if (tenant.lineUserId) {
       if (tenant.lineUserId === userId) {
-        return this.replyText(
-          replyToken,
-          'บัญชี LINE นี้เชื่อมกับหอพักเรียบร้อยแล้ว',
-        );
+        const msg = [
+          'เชื่อมต่อสำเร็จ 🎉',
+          'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
+          'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
+          'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
+        ].join('\n');
+        return this.replyText(replyToken, msg);
       }
       return this.replyText(
         replyToken,
@@ -511,10 +771,13 @@ export class LineService implements OnModuleInit {
       }
     }
 
-    return this.replyText(
-      replyToken,
-      `Successfully registered! Welcome ${tenant.name}.`,
-    );
+    const msg = [
+      'เชื่อมต่อสำเร็จ 🎉',
+      'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
+      'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
+      'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
+    ].join('\n');
+    return this.replyText(replyToken, msg);
   }
 
   private getRoomContactsFilePath() {
@@ -1583,7 +1846,7 @@ export class LineService implements OnModuleInit {
         await this.replyFlex(event.replyToken, msg);
         return;
       }
-        if (maintState.step === 'ASK_IMAGE') {
+      if (maintState.step === 'ASK_IMAGE') {
         if (text === 'ไม่ส่งรูปแจ้งซ่อม') {
           this.tenantMaintenanceState.delete(userId);
           this.clearTenantMaintenanceTimer(userId);
