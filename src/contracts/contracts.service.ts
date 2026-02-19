@@ -27,6 +27,51 @@ export class ContractsService {
       });
     }
 
+    try {
+      const start = new Date(createContractDto.startDate);
+      const month = start.getMonth() + 1;
+      const year = start.getFullYear();
+      const rentAmount = Math.max(0, Number(createContractDto.currentRent || 0));
+      const depositAmount = Math.max(0, Number(createContractDto.deposit || 0));
+
+      // Create initial move-in invoice: rent + deposit, no utilities
+      const invoice = await this.prisma.invoice.create({
+        data: {
+          contractId: contract.id,
+          month,
+          year,
+          rentAmount,
+          waterAmount: 0,
+          electricAmount: 0,
+          otherFees: 0,
+          discount: 0,
+          totalAmount: rentAmount + depositAmount,
+          status: 'DRAFT',
+          dueDate: start,
+        },
+      });
+
+      if (depositAmount > 0) {
+        await this.prisma.invoiceItem.create({
+          data: {
+            invoiceId: invoice.id,
+            description: 'ค่าประกัน',
+            amount: depositAmount,
+          },
+        });
+        // Ensure total matches base + items
+        const base = rentAmount; // water/electric/otherFees are 0
+        const nextTotal = Math.max(0, base + depositAmount);
+        await this.prisma.invoice.update({
+          where: { id: invoice.id },
+          data: { totalAmount: nextTotal },
+        });
+      }
+    } catch (e) {
+      // swallow invoice creation error to not block contract creation
+      void e;
+    }
+
     return contract;
   }
 
