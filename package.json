@@ -17,7 +17,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "deploy:docker": "docker-compose build backend && docker-compose up -d backend",
+    "postdeploy:docker": "git add . && git commit -m \"chore(deploy): auto commit after docker deploy (BE)\" || true && git push origin main"
   },
   "dependencies": {
     "@line/bot-sdk": "^10.6.0",
