@@ -125,6 +125,24 @@ export class LineService implements OnModuleInit {
     }
   >();
 
+  private async getLineNotifyTargets(): Promise<string[]> {
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.ADMIN, Role.OWNER] },
+        lineUserId: { not: null },
+      },
+      select: { lineUserId: true, permissions: true },
+    });
+    const targets = users
+      .filter((u) => {
+        const perms = Array.isArray(u.permissions) ? (u.permissions as any[]) : [];
+        return perms.includes('line_notifications');
+      })
+      .map((u) => u.lineUserId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return Array.from(new Set(targets));
+  }
+
   private readonly staffMaintenanceState = new Map<
     string,
     {
@@ -376,7 +394,7 @@ export class LineService implements OnModuleInit {
         },
       },
     };
-    const targets = Array.from(new Set(this.staffUserIds));
+    const targets = await this.getLineNotifyTargets();
     for (const uid of targets) {
       if (!uid) continue;
       this.setStaffMaintenanceState(uid, maintenance.id);
@@ -5441,7 +5459,7 @@ export class LineService implements OnModuleInit {
     const msg = [`แจ้งเตือนห้องที่จะย้ายออกในวันที่ ${target}`, ...lines].join(
       '\n',
     );
-    const targets = Array.from(new Set(this.staffUserIds));
+    const targets = await this.getLineNotifyTargets();
     for (const uid of targets) {
       if (uid) {
         await this.pushMessage(uid, msg);
@@ -6081,22 +6099,7 @@ export class LineService implements OnModuleInit {
     paidAt?: Date;
     tenantName?: string;
   }) {
-    const users = await this.prisma.user.findMany({
-      where: {
-        role: { in: [Role.ADMIN, Role.OWNER] },
-        lineUserId: { not: null },
-      },
-      select: { lineUserId: true },
-    });
-    const targets = Array.from(
-      new Set(
-        users
-          .map((u) => u.lineUserId)
-          .filter(
-            (id): id is string => typeof id === 'string' && id.length > 0,
-          ),
-      ),
-    );
+    const targets = await this.getLineNotifyTargets();
     if (!targets.length) return;
     const paidAt = params.paidAt || new Date();
     const whenStr = paidAt.toLocaleString('th-TH', {
