@@ -4,6 +4,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import * as bcrypt from 'bcrypt';
 import { Prisma } from '@prisma/client';
+import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
 
 @Injectable()
 export class UsersService {
@@ -31,7 +32,7 @@ export class UsersService {
         : undefined;
 
     try {
-      return await this.prisma.user.create({
+      const u = await this.prisma.user.create({
         data: {
           ...normalized,
           verifyCode: initialVerify,
@@ -39,6 +40,13 @@ export class UsersService {
           permissions: createUserDto.permissions as Prisma.InputJsonValue,
         },
       });
+      appendLog({
+        action: 'CREATE',
+        entityType: 'User',
+        entityId: u.id,
+        details: { username: u.username, role: u.role },
+      });
+      return u;
     } catch (e: unknown) {
       if (
         e instanceof Prisma.PrismaClientKnownRequestError &&
@@ -64,7 +72,9 @@ export class UsersService {
   }
 
   async findAll() {
-    return this.prisma.user.findMany({
+    const store = readDeletedStore();
+    const removed = new Set<string>(store['User']?.ids || []);
+    const users = await this.prisma.user.findMany({
       select: {
         id: true,
         username: true,
@@ -78,6 +88,7 @@ export class UsersService {
         updatedAt: true,
       },
     });
+    return users.filter((u) => !removed.has(u.id));
   }
 
   async findOne(id: string) {
@@ -109,15 +120,30 @@ export class UsersService {
       data.permissions = permissions as Prisma.InputJsonValue;
     }
 
-    return this.prisma.user.update({
+    const u = await this.prisma.user.update({
       where: { id },
       data,
     });
+    appendLog({
+      action: 'UPDATE',
+      entityType: 'User',
+      entityId: id,
+      details: updateUserDto,
+    });
+    return u;
   }
 
   async remove(id: string) {
-    return this.prisma.user.delete({
-      where: { id },
-    });
+    const u = await this.prisma.user.findUnique({ where: { id } });
+    if (u) {
+      softDeleteRecord('User', id, { username: u.username, role: u.role });
+      appendLog({
+        action: 'DELETE',
+        entityType: 'User',
+        entityId: id,
+        details: { username: u.username },
+      });
+    }
+    return { ok: true };
   }
 }

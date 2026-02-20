@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
 import { RoomStatus, Prisma } from '@prisma/client';
+import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
 
 @Injectable()
 export class ContractsService {
@@ -17,6 +18,12 @@ export class ContractsService {
           ? new Date(createContractDto.endDate)
           : null,
       },
+    });
+    appendLog({
+      action: 'CREATE',
+      entityType: 'Contract',
+      entityId: contract.id,
+      details: { tenantId: contract.tenantId, roomId: contract.roomId, startDate: contract.startDate },
     });
 
     // Update room status to OCCUPIED
@@ -76,16 +83,22 @@ export class ContractsService {
   }
 
   findAll() {
-    return this.prisma.contract.findMany({
-      include: {
-        tenant: true,
-        room: {
-          include: {
-            building: true,
+    return this.prisma.contract
+      .findMany({
+        include: {
+          tenant: true,
+          room: {
+            include: {
+              building: true,
+            },
           },
         },
-      },
-    });
+      })
+      .then((list) => {
+        const store = readDeletedStore();
+        const removed = new Set<string>(store['Contract']?.ids || []);
+        return list.filter((c) => !removed.has(c.id));
+      });
   }
 
   findOne(id: string) {
@@ -116,6 +129,12 @@ export class ContractsService {
     const contract = await this.prisma.contract.update({
       where: { id },
       data,
+    });
+    appendLog({
+      action: 'UPDATE',
+      entityType: 'Contract',
+      entityId: id,
+      details: updateContractDto,
     });
 
     if (
@@ -153,8 +172,20 @@ export class ContractsService {
   }
 
   async remove(id: string) {
-    const contract = await this.prisma.contract.delete({
-      where: { id },
+    const contract = await this.prisma.contract.findUnique({ where: { id } });
+    if (!contract) {
+      return { ok: true };
+    }
+    softDeleteRecord('Contract', id, {
+      tenantId: contract.tenantId,
+      roomId: contract.roomId,
+      startDate: contract.startDate,
+    });
+    appendLog({
+      action: 'DELETE',
+      entityType: 'Contract',
+      entityId: id,
+      details: { tenantId: contract.tenantId, roomId: contract.roomId },
     });
 
     if (contract.isActive) {
@@ -164,7 +195,7 @@ export class ContractsService {
       });
     }
 
-    return contract;
+    return { ok: true };
   }
 
   async syncDepositsGlobal() {

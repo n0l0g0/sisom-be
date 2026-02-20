@@ -4,6 +4,7 @@ import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LineService } from '../line/line.service';
 import { InvoiceStatus, PaymentStatus, Prisma } from '@prisma/client';
+import { appendLog } from '../activity/logger';
 
 @Injectable()
 export class PaymentsService {
@@ -13,9 +14,19 @@ export class PaymentsService {
   ) {}
 
   create(createPaymentDto: CreatePaymentDto) {
-    return this.prisma.payment.create({
-      data: createPaymentDto,
-    });
+    return this.prisma.payment
+      .create({
+        data: createPaymentDto,
+      })
+      .then((p) => {
+        appendLog({
+          action: 'CREATE',
+          entityType: 'Payment',
+          entityId: p.id,
+          details: { invoiceId: p.invoiceId, amount: p.amount },
+        });
+        return p;
+      });
   }
 
   findAll(filters?: { room?: string; status?: PaymentStatus }) {
@@ -184,9 +195,19 @@ export class PaymentsService {
     });
   }
 
-  remove(id: string) {
-    return this.prisma.payment.delete({
+  async remove(id: string) {
+    const p = await this.prisma.payment.findUnique({ where: { id } });
+    if (!p) return { ok: true };
+    const updated = await this.prisma.payment.update({
       where: { id },
+      data: { status: PaymentStatus.REJECTED },
     });
+    appendLog({
+      action: 'DELETE',
+      entityType: 'Payment',
+      entityId: id,
+      details: { invoiceId: p.invoiceId },
+    });
+    return updated;
   }
 }

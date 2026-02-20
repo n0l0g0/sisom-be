@@ -4,6 +4,7 @@ import { CreateMaintenanceDto } from './dto/create-maintenance.dto';
 import { UpdateMaintenanceDto } from './dto/update-maintenance.dto';
 import { MaintenanceStatus, RoomStatus } from '@prisma/client';
 import { LineService } from '../line/line.service';
+import { appendLog } from '../activity/logger';
 
 @Injectable()
 export class MaintenanceService {
@@ -15,6 +16,12 @@ export class MaintenanceService {
   async create(createMaintenanceDto: CreateMaintenanceDto) {
     const maintenanceRequest = await this.prisma.maintenanceRequest.create({
       data: createMaintenanceDto,
+    });
+    appendLog({
+      action: 'CREATE',
+      entityType: 'MaintenanceRequest',
+      entityId: maintenanceRequest.id,
+      details: createMaintenanceDto,
     });
 
     if (createMaintenanceDto.roomId) {
@@ -77,6 +84,12 @@ export class MaintenanceService {
       where: { id },
       data,
     });
+    appendLog({
+      action: 'UPDATE',
+      entityType: 'MaintenanceRequest',
+      entityId: id,
+      details: updateMaintenanceDto,
+    });
 
     if (
       prev &&
@@ -96,9 +109,21 @@ export class MaintenanceService {
     return updated;
   }
 
-  remove(id: string) {
-    return this.prisma.maintenanceRequest.delete({
+  async remove(id: string) {
+    const exists = await this.prisma.maintenanceRequest.findUnique({
       where: { id },
     });
+    if (!exists) return { ok: true };
+    const updated = await this.prisma.maintenanceRequest.update({
+      where: { id },
+      data: { status: MaintenanceStatus.CANCELLED },
+    });
+    appendLog({
+      action: 'DELETE',
+      entityType: 'MaintenanceRequest',
+      entityId: id,
+      details: { prevStatus: exists.status },
+    });
+    return updated;
   }
 }

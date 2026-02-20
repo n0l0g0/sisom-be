@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
 
 @Injectable()
 export class RoomsService {
@@ -232,28 +233,41 @@ export class RoomsService {
     if (electricOverrideAmount !== undefined) {
       data.electricOverrideAmount = electricOverrideAmount;
     }
-    return this.prisma.room.create({
+    const room = await this.prisma.room.create({
       data,
     });
+    appendLog({
+      action: 'CREATE',
+      entityType: 'Room',
+      entityId: room.id,
+      details: { number: room.number, floor: room.floor, buildingId: room.buildingId },
+    });
+    return room;
   }
 
   findAll() {
-    return this.prisma.room.findMany({
-      orderBy: [{ building: { code: 'asc' } }, { number: 'asc' }],
-      include: {
-        contracts: {
-          where: { isActive: true },
-          orderBy: { startDate: 'desc' },
-          take: 1,
-          include: { tenant: true },
+    return this.prisma.room
+      .findMany({
+        orderBy: [{ building: { code: 'asc' } }, { number: 'asc' }],
+        include: {
+          contracts: {
+            where: { isActive: true },
+            orderBy: { startDate: 'desc' },
+            take: 1,
+            include: { tenant: true },
+          },
+          meterReadings: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+          building: true,
         },
-        meterReadings: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
-        building: true,
-      },
-    });
+      })
+      .then((list) => {
+        const store = readDeletedStore();
+        const removed = new Set<string>(store['Room']?.ids || []);
+        return list.filter((r) => !removed.has(r.id));
+      });
   }
 
   findOne(id: string) {
@@ -291,7 +305,7 @@ export class RoomsService {
       }
     }
 
-    return this.prisma.room.update({
+    const updated = await this.prisma.room.update({
       where: { id },
       data: {
         number: nextNumber,
@@ -310,12 +324,31 @@ export class RoomsService {
             : undefined,
       },
     });
+    appendLog({
+      action: 'UPDATE',
+      entityType: 'Room',
+      entityId: id,
+      details: updateRoomDto,
+    });
+    return updated;
   }
 
-  remove(id: string) {
-    return this.prisma.room.delete({
-      where: { id },
-    });
+  async remove(id: string) {
+    const room = await this.prisma.room.findUnique({ where: { id } });
+    if (room) {
+      softDeleteRecord('Room', id, {
+        number: room.number,
+        floor: room.floor,
+        buildingId: room.buildingId,
+      });
+      appendLog({
+        action: 'DELETE',
+        entityType: 'Room',
+        entityId: id,
+        details: { number: room.number, floor: room.floor },
+      });
+    }
+    return { ok: true };
   }
 
   async getRoomPaymentSchedule(roomId: string) {

@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UTILITY_RATES } from '../common/constants';
 import { InvoiceStatus, WaterFeeMethod, PaymentStatus } from '@prisma/client';
 import { LineService } from '../line/line.service';
+import { appendLog } from '../activity/logger';
 
 @Injectable()
 export class InvoicesService {
@@ -426,17 +427,27 @@ export class InvoicesService {
       this.round(rent + water + electric + other - discount),
     );
 
-    return this.prisma.invoice.create({
-      data: {
-        ...createInvoiceDto,
-        rentAmount: rent,
-        waterAmount: water,
-        electricAmount: electric,
-        otherFees: other,
-        discount: discount,
-        totalAmount: total,
-      },
-    });
+    return this.prisma.invoice
+      .create({
+        data: {
+          ...createInvoiceDto,
+          rentAmount: rent,
+          waterAmount: water,
+          electricAmount: electric,
+          otherFees: other,
+          discount: discount,
+          totalAmount: total,
+        },
+      })
+      .then((inv) => {
+        appendLog({
+          action: 'CREATE',
+          entityType: 'Invoice',
+          entityId: inv.id,
+          details: { contractId: inv.contractId, month: inv.month, year: inv.year },
+        });
+        return inv;
+      });
   }
 
   async findAll() {
@@ -533,6 +544,12 @@ export class InvoicesService {
         data: updateInvoiceDto,
       })
       .then(async (inv) => {
+        appendLog({
+          action: 'UPDATE',
+          entityType: 'Invoice',
+          entityId: id,
+          details: updateInvoiceDto,
+        });
         const full = await this.prisma.invoice.findUnique({
           where: { id },
           include: { items: true },
@@ -559,10 +576,20 @@ export class InvoicesService {
       });
   }
 
-  remove(id: string) {
-    return this.prisma.invoice.delete({
+  async remove(id: string) {
+    const exists = await this.prisma.invoice.findUnique({ where: { id } });
+    if (!exists) return { ok: true };
+    const updated = await this.prisma.invoice.update({
       where: { id },
+      data: { status: InvoiceStatus.CANCELLED },
     });
+    appendLog({
+      action: 'DELETE',
+      entityType: 'Invoice',
+      entityId: id,
+      details: { prevStatus: exists.status },
+    });
+    return updated;
   }
 
   async cancel(id: string) {
@@ -590,6 +617,12 @@ export class InvoicesService {
         description: String(body.description || '').slice(0, 200),
         amount: Math.max(0, Number(body.amount || 0)),
       },
+    });
+    appendLog({
+      action: 'CREATE',
+      entityType: 'InvoiceItem',
+      entityId: item.id,
+      details: { invoiceId, description: body.description, amount: body.amount },
     });
     const all = await this.prisma.invoiceItem.findMany({
       where: { invoiceId },
@@ -631,6 +664,12 @@ export class InvoicesService {
           : {}),
       },
     });
+    appendLog({
+      action: 'UPDATE',
+      entityType: 'InvoiceItem',
+      entityId: itemId,
+      details: body,
+    });
     const inv = await this.prisma.invoice.findUnique({
       where: { id: item.invoiceId },
     });
@@ -662,7 +701,16 @@ export class InvoicesService {
       where: { id: itemId },
     });
     if (!item) throw new NotFoundException('Invoice item not found');
-    await this.prisma.invoiceItem.delete({ where: { id: itemId } });
+    await this.prisma.invoiceItem.update({
+      where: { id: itemId },
+      data: { amount: 0, description: `[DELETED] ${item.description}` },
+    });
+    appendLog({
+      action: 'DELETE',
+      entityType: 'InvoiceItem',
+      entityId: itemId,
+      details: { invoiceId: item.invoiceId },
+    });
     const inv = await this.prisma.invoice.findUnique({
       where: { id: item.invoiceId },
     });

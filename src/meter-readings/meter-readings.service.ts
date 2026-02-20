@@ -3,6 +3,7 @@ import { CreateMeterReadingDto } from './dto/create-meter-reading.dto';
 import { UpdateMeterReadingDto } from './dto/update-meter-reading.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
 
 @Injectable()
 export class MeterReadingsService {
@@ -22,6 +23,14 @@ export class MeterReadingsService {
         electricReading: createMeterReadingDto.electricReading,
       },
       create: createMeterReadingDto,
+    }).then((mr) => {
+      appendLog({
+        action: 'UPSERT',
+        entityType: 'MeterReading',
+        entityId: mr.id,
+        details: { roomId: mr.roomId, month: mr.month, year: mr.year },
+      });
+      return mr;
     });
   }
 
@@ -30,17 +39,23 @@ export class MeterReadingsService {
     if (month) where.month = month;
     if (year) where.year = year;
 
-    return this.prisma.meterReading.findMany({
-      where,
-      include: {
-        room: true,
-      },
-      orderBy: [
-        { year: 'desc' },
-        { month: 'desc' },
-        { room: { number: 'asc' } },
-      ],
-    });
+    return this.prisma.meterReading
+      .findMany({
+        where,
+        include: {
+          room: true,
+        },
+        orderBy: [
+          { year: 'desc' },
+          { month: 'desc' },
+          { room: { number: 'asc' } },
+        ],
+      })
+      .then((list) => {
+        const store = readDeletedStore();
+        const removed = new Set<string>(store['MeterReading']?.ids || []);
+        return list.filter((mr) => !removed.has(mr.id));
+      });
   }
 
   findOne(id: string) {
@@ -57,22 +72,50 @@ export class MeterReadingsService {
     if (month) where.month = month;
     if (year) where.year = year;
 
-    return this.prisma.meterReading.findMany({
-      where,
-      orderBy: [{ year: 'desc' }, { month: 'desc' }],
-    });
+    return this.prisma.meterReading
+      .findMany({
+        where,
+        orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      })
+      .then((list) => {
+        const store = readDeletedStore();
+        const removed = new Set<string>(store['MeterReading']?.ids || []);
+        return list.filter((mr) => !removed.has(mr.id));
+      });
   }
 
   update(id: string, updateMeterReadingDto: UpdateMeterReadingDto) {
-    return this.prisma.meterReading.update({
-      where: { id },
-      data: updateMeterReadingDto,
-    });
+    return this.prisma.meterReading
+      .update({
+        where: { id },
+        data: updateMeterReadingDto,
+      })
+      .then((mr) => {
+        appendLog({
+          action: 'UPDATE',
+          entityType: 'MeterReading',
+          entityId: id,
+          details: updateMeterReadingDto,
+        });
+        return mr;
+      });
   }
 
-  remove(id: string) {
-    return this.prisma.meterReading.delete({
-      where: { id },
-    });
+  async remove(id: string) {
+    const mr = await this.prisma.meterReading.findUnique({ where: { id } });
+    if (mr) {
+      softDeleteRecord('MeterReading', id, {
+        roomId: mr.roomId,
+        month: mr.month,
+        year: mr.year,
+      });
+      appendLog({
+        action: 'DELETE',
+        entityType: 'MeterReading',
+        entityId: id,
+        details: { roomId: mr.roomId, month: mr.month, year: mr.year },
+      });
+    }
+    return { ok: true };
   }
 }

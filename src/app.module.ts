@@ -17,6 +17,7 @@ import { BuildingsModule } from './buildings/buildings.module';
 import { AssetsModule } from './assets/assets.module';
 import { MediaModule } from './media/media.module';
 import { BackupsModule } from './backups/backups.module';
+import { ActivityModule } from './activity/activity.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { BackupsModule } from './backups/backups.module';
     AssetsModule,
     MediaModule,
     BackupsModule,
+    ActivityModule,
   ],
   controllers: [AppController],
   providers: [AppService],
