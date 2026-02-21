@@ -152,6 +152,16 @@ export class LineController {
   async getUsage() {
     return this.lineService.getMonthlyUsage();
   }
+  @Post('push')
+  async push(@Body() body: { userId?: string; text?: string }) {
+    const userId = (body?.userId || '').trim();
+    const text = (body?.text || '').trim();
+    if (!userId || !text) {
+      return { ok: false };
+    }
+    await this.lineService.pushMessage(userId, text);
+    return { ok: true };
+  }
   @Get('recent-chats')
   async getRecentChats(@Query('limit') limit?: string) {
     const n = Math.max(1, Math.min(50, Number(limit || '5') || 5));
