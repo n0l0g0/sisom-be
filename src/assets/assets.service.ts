@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
-import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
+import {
+  appendLog,
+  readDeletedStore,
+  softDeleteRecord,
+} from '../activity/logger';
 
 @Injectable()
 export class AssetsService {

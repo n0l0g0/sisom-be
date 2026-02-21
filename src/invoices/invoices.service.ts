@@ -444,7 +444,11 @@ export class InvoicesService {
           action: 'CREATE',
           entityType: 'Invoice',
           entityId: inv.id,
-          details: { contractId: inv.contractId, month: inv.month, year: inv.year },
+          details: {
+            contractId: inv.contractId,
+            month: inv.month,
+            year: inv.year,
+          },
         });
         return inv;
       });
@@ -622,7 +626,11 @@ export class InvoicesService {
       action: 'CREATE',
       entityType: 'InvoiceItem',
       entityId: item.id,
-      details: { invoiceId, description: body.description, amount: body.amount },
+      details: {
+        invoiceId,
+        description: body.description,
+        amount: body.amount,
+      },
     });
     const all = await this.prisma.invoiceItem.findMany({
       where: { invoiceId },
@@ -770,7 +778,8 @@ export class InvoicesService {
           otherFees: Number(invoice.otherFees || 0),
           discount: Number(invoice.discount || 0),
           totalAmount: Number(invoice.totalAmount),
-          buildingLabel: room.building?.name || room.building?.code || undefined,
+          buildingLabel:
+            room.building?.name || room.building?.code || undefined,
           bankInstruction: bankNote,
         });
       }

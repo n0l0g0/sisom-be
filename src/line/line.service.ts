@@ -126,6 +126,14 @@ export class LineService implements OnModuleInit {
       moveoutDate?: string;
     }
   >();
+  private readonly recentChats: Array<{
+    id: string;
+    userId: string;
+    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+    text?: string;
+    altText?: string;
+    timestamp: string;
+  }> = [];
 
   private async getLineNotifyTargets(): Promise<string[]> {
     const users = await this.prisma.user.findMany({
@@ -137,7 +145,9 @@ export class LineService implements OnModuleInit {
     });
     const targets = users
       .filter((u) => {
-        const perms = Array.isArray(u.permissions) ? (u.permissions as any[]) : [];
+        const perms = Array.isArray(u.permissions)
+          ? (u.permissions as any[])
+          : [];
         return perms.includes('line_notifications');
       })
       .map((u) => u.lineUserId)
@@ -175,30 +185,48 @@ export class LineService implements OnModuleInit {
   private recordMessage(kind: 'push_text' | 'push_flex') {
     const store = this.readUsageStore();
     const key = new Date().toISOString().slice(0, 7);
-    const month = (store[key] || {}) as { push_text?: number; push_flex?: number };
-    month.push_text = Number(month.push_text || 0) + (kind === 'push_text' ? 1 : 0);
-    month.push_flex = Number(month.push_flex || 0) + (kind === 'push_flex' ? 1 : 0);
+    const month = (store[key] || {}) as {
+      push_text?: number;
+      push_flex?: number;
+    };
+    month.push_text =
+      Number(month.push_text || 0) + (kind === 'push_text' ? 1 : 0);
+    month.push_flex =
+      Number(month.push_flex || 0) + (kind === 'push_flex' ? 1 : 0);
     store[key] = month;
     this.writeUsageStore(store);
   }
   async getMonthlyUsage() {
     const store = this.readUsageStore();
     const key = new Date().toISOString().slice(0, 7);
-    const month = (store[key] || {}) as { push_text?: number; push_flex?: number };
+    const month = (store[key] || {}) as {
+      push_text?: number;
+      push_flex?: number;
+    };
     const pushText = Number(month.push_text || 0);
     const pushFlex = Number(month.push_flex || 0);
-    let sentLocal = pushText + pushFlex;
-    let limitLocal =
-      Number(process.env.LINE_MONTHLY_FREE_LIMIT || process.env.LINE_FREE_LIMIT || 300) || 300;
+    const sentLocal = pushText + pushFlex;
+    const limitLocal =
+      Number(
+        process.env.LINE_MONTHLY_FREE_LIMIT ||
+          process.env.LINE_FREE_LIMIT ||
+          300,
+      ) || 300;
     let sentOfficial: number | undefined;
     let limitOfficial: number | undefined;
     try {
       if (this.channelAccessToken) {
-        const quotaRes = await fetch('https://api.line.me/v2/bot/message/quota', {
-          headers: { Authorization: `Bearer ${this.channelAccessToken}` },
-        });
+        const quotaRes = await fetch(
+          'https://api.line.me/v2/bot/message/quota',
+          {
+            headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+          },
+        );
         if (quotaRes.ok) {
-          const q = (await quotaRes.json()) as { type?: string; value?: number };
+          const q = (await quotaRes.json()) as {
+            type?: string;
+            value?: number;
+          };
           if (q?.type === 'limited' && typeof q?.value === 'number') {
             limitOfficial = q.value;
           } else if (q?.type === 'unlimited') {
@@ -218,9 +246,11 @@ export class LineService implements OnModuleInit {
       }
     } catch {}
     const sent = typeof sentOfficial === 'number' ? sentOfficial : sentLocal;
-    const limit = typeof limitOfficial === 'number' ? limitOfficial : limitLocal;
+    const limit =
+      typeof limitOfficial === 'number' ? limitOfficial : limitLocal;
     const remaining = Math.max(0, limit - sent);
-    const percent = limit > 0 ? Math.min(100, Math.round((sent / limit) * 100)) : 0;
+    const percent =
+      limit > 0 ? Math.min(100, Math.round((sent / limit) * 100)) : 0;
     return {
       month: key,
       sent,
@@ -229,6 +259,29 @@ export class LineService implements OnModuleInit {
       percent,
       breakdown: { pushText, pushFlex },
     };
+  }
+  private addRecentChat(entry: {
+    userId: string;
+    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+    text?: string;
+    altText?: string;
+  }) {
+    const item = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      userId: entry.userId,
+      type: entry.type,
+      text: entry.text,
+      altText: entry.altText,
+      timestamp: new Date().toISOString(),
+    };
+    this.recentChats.push(item);
+    if (this.recentChats.length > 50) {
+      this.recentChats.splice(0, this.recentChats.length - 50);
+    }
+  }
+  getRecentChats(count = 5) {
+    const n = Math.max(1, Math.min(50, count || 5));
+    return this.recentChats.slice(-n).reverse();
   }
 
   private readonly staffMaintenanceState = new Map<
@@ -661,8 +714,6 @@ export class LineService implements OnModuleInit {
   logError(message: string, meta?: any) {
     this.logger.error(message, meta);
   }
-
-
 
   async notifyTenantMaintenanceCompleted(maintenanceId: string) {
     const maintenance = await this.prisma.maintenanceRequest.findUnique({
@@ -1703,6 +1754,9 @@ export class LineService implements OnModuleInit {
 
     if (event.message.type === 'image') {
       const uid = (event as LineImageEvent).source.userId || '';
+      if (uid) {
+        this.addRecentChat({ userId: uid, type: 'received_image' });
+      }
       const mo = this.moveoutState.get(uid);
       if (mo?.step) {
         return this.handleMoveOutImage(event as LineImageEvent);
@@ -1720,6 +1774,9 @@ export class LineService implements OnModuleInit {
 
     const userId = event.source.userId || '';
     const text = event.message.text.trim();
+    if (userId) {
+      this.addRecentChat({ userId, type: 'received_text', text });
+    }
 
     if (text.toLowerCase() === 'whoami') {
       if (!userId) {
@@ -5497,6 +5554,7 @@ export class LineService implements OnModuleInit {
       messages: [{ type: 'text', text }],
     });
     this.recordMessage('push_text');
+    this.addRecentChat({ userId, type: 'sent_text', text });
     return res;
   }
 
@@ -6011,6 +6069,7 @@ export class LineService implements OnModuleInit {
       messages: [message as messagingApi.Message],
     });
     this.recordMessage('push_flex');
+    this.addRecentChat({ userId, type: 'sent_flex', altText });
     return res;
   }
 

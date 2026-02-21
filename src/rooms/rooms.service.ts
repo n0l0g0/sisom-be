@@ -11,7 +11,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
+import {
+  appendLog,
+  readDeletedStore,
+  softDeleteRecord,
+} from '../activity/logger';
 
 @Injectable()
 export class RoomsService {
@@ -240,7 +244,11 @@ export class RoomsService {
       action: 'CREATE',
       entityType: 'Room',
       entityId: room.id,
-      details: { number: room.number, floor: room.floor, buildingId: room.buildingId },
+      details: {
+        number: room.number,
+        floor: room.floor,
+        buildingId: room.buildingId,
+      },
     });
     return room;
   }
@@ -383,7 +391,11 @@ export class RoomsService {
       const day = d.getUTCDate();
       store[roomId] = { monthlyDay: day, oneTimeDate: undefined, updatedAt };
     } else {
-      store[roomId] = { oneTimeDate: d.toISOString(), monthlyDay: undefined, updatedAt };
+      store[roomId] = {
+        oneTimeDate: d.toISOString(),
+        monthlyDay: undefined,
+        updatedAt,
+      };
     }
     this.writeSchedulesStore(store);
     return store[roomId];

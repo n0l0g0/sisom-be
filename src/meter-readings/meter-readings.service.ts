@@ -3,35 +3,41 @@ import { CreateMeterReadingDto } from './dto/create-meter-reading.dto';
 import { UpdateMeterReadingDto } from './dto/update-meter-reading.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
-import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
+import {
+  appendLog,
+  readDeletedStore,
+  softDeleteRecord,
+} from '../activity/logger';
 
 @Injectable()
 export class MeterReadingsService {
   constructor(private prisma: PrismaService) {}
 
   create(createMeterReadingDto: CreateMeterReadingDto) {
-    return this.prisma.meterReading.upsert({
-      where: {
-        roomId_month_year: {
-          roomId: createMeterReadingDto.roomId,
-          month: createMeterReadingDto.month,
-          year: createMeterReadingDto.year,
+    return this.prisma.meterReading
+      .upsert({
+        where: {
+          roomId_month_year: {
+            roomId: createMeterReadingDto.roomId,
+            month: createMeterReadingDto.month,
+            year: createMeterReadingDto.year,
+          },
         },
-      },
-      update: {
-        waterReading: createMeterReadingDto.waterReading,
-        electricReading: createMeterReadingDto.electricReading,
-      },
-      create: createMeterReadingDto,
-    }).then((mr) => {
-      appendLog({
-        action: 'UPSERT',
-        entityType: 'MeterReading',
-        entityId: mr.id,
-        details: { roomId: mr.roomId, month: mr.month, year: mr.year },
+        update: {
+          waterReading: createMeterReadingDto.waterReading,
+          electricReading: createMeterReadingDto.electricReading,
+        },
+        create: createMeterReadingDto,
+      })
+      .then((mr) => {
+        appendLog({
+          action: 'UPSERT',
+          entityType: 'MeterReading',
+          entityId: mr.id,
+          details: { roomId: mr.roomId, month: mr.month, year: mr.year },
+        });
+        return mr;
       });
-      return mr;
-    });
   }
 
   findAll(month?: number, year?: number) {

@@ -4,7 +4,11 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import * as bcrypt from 'bcrypt';
 import { Prisma } from '@prisma/client';
-import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
+import {
+  appendLog,
+  readDeletedStore,
+  softDeleteRecord,
+} from '../activity/logger';
 
 @Injectable()
 export class UsersService {

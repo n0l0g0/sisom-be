@@ -152,4 +152,10 @@ export class LineController {
   async getUsage() {
     return this.lineService.getMonthlyUsage();
   }
+  @Get('recent-chats')
+  async getRecentChats(@Query('limit') limit?: string) {
+    const n = Math.max(1, Math.min(50, Number(limit || '5') || 5));
+    const items = this.lineService.getRecentChats(n);
+    return { items };
+  }
 }

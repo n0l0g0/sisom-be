@@ -22,7 +22,10 @@ export class BackupsController {
 
   @Post('schedule')
   setSchedule(@Body() body: { hour: number; minute?: number }) {
-    return this.backups.setSchedule({ hour: Number(body.hour), minute: Number(body.minute ?? 0) });
+    return this.backups.setSchedule({
+      hour: Number(body.hour),
+      minute: Number(body.minute ?? 0),
+    });
   }
 
   @Post('run')

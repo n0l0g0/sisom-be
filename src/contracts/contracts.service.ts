@@ -3,7 +3,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
 import { RoomStatus, Prisma } from '@prisma/client';
-import { appendLog, readDeletedStore, softDeleteRecord } from '../activity/logger';
+import {
+  appendLog,
+  readDeletedStore,
+  softDeleteRecord,
+} from '../activity/logger';
 
 @Injectable()
 export class ContractsService {
@@ -23,7 +27,11 @@ export class ContractsService {
       action: 'CREATE',
       entityType: 'Contract',
       entityId: contract.id,
-      details: { tenantId: contract.tenantId, roomId: contract.roomId, startDate: contract.startDate },
+      details: {
+        tenantId: contract.tenantId,
+        roomId: contract.roomId,
+        startDate: contract.startDate,
+      },
     });
 
     // Update room status to OCCUPIED
@@ -38,7 +46,10 @@ export class ContractsService {
       const start = new Date(createContractDto.startDate);
       const month = start.getMonth() + 1;
       const year = start.getFullYear();
-      const rentAmount = Math.max(0, Number(createContractDto.currentRent || 0));
+      const rentAmount = Math.max(
+        0,
+        Number(createContractDto.currentRent || 0),
+      );
       const depositAmount = Math.max(0, Number(createContractDto.deposit || 0));
 
       // Create initial move-in invoice: rent + deposit, no utilities

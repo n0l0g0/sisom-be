@@ -39,8 +39,10 @@ export class BackupsService implements OnModuleInit {
       const parsed = JSON.parse(raw) as ScheduleConfig;
       const hour = Number(parsed.hour);
       const minute = Number(parsed.minute ?? 0);
-      if (!Number.isFinite(hour) || hour < 0 || hour > 23) return { hour: 3, minute: 0 };
-      if (!Number.isFinite(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
+      if (!Number.isFinite(hour) || hour < 0 || hour > 23)
+        return { hour: 3, minute: 0 };
+      if (!Number.isFinite(minute) || minute < 0 || minute > 59)
+        return { hour, minute: 0 };
       return { hour, minute };
     } catch {
       return { hour: 3, minute: 0 };
@@ -52,7 +54,11 @@ export class BackupsService implements OnModuleInit {
     const minute = Math.max(0, Math.min(59, Number(cfg.minute ?? 0)));
     const next: ScheduleConfig = { hour, minute };
     try {
-      fs.writeFileSync(this.configPath(), JSON.stringify(next, null, 2), 'utf8');
+      fs.writeFileSync(
+        this.configPath(),
+        JSON.stringify(next, null, 2),
+        'utf8',
+      );
     } catch {}
     this.applySchedule(next);
     return next;
@@ -66,9 +72,13 @@ export class BackupsService implements OnModuleInit {
       this.task = null;
     }
     const cronExpr = `${cfg.minute ?? 0} ${cfg.hour} * * *`;
-    this.task = cron.schedule(cronExpr, () => this.runBackup().catch(() => {}), {
-      timezone: 'Asia/Bangkok',
-    });
+    this.task = cron.schedule(
+      cronExpr,
+      () => this.runBackup().catch(() => {}),
+      {
+        timezone: 'Asia/Bangkok',
+      },
+    );
   }
 
   async runBackup(): Promise<{ ok: boolean; file?: string; error?: string }> {
@@ -93,7 +103,10 @@ export class BackupsService implements OnModuleInit {
     const dd = `${timestamp.getDate()}`.padStart(2, '0');
     const HH = `${timestamp.getHours()}`.padStart(2, '0');
     const MM = `${timestamp.getMinutes()}`.padStart(2, '0');
-    const file = path.join(this.backupsDir(), `db_${timestamp.getFullYear()}${mm}${dd}_${HH}${MM}.sql`);
+    const file = path.join(
+      this.backupsDir(),
+      `db_${timestamp.getFullYear()}${mm}${dd}_${HH}${MM}.sql`,
+    );
     const cmd = `PGPASSWORD='${password}' pg_dump -h ${host} -p ${port} -U ${user} -F p -f ${file} ${db}`;
     return new Promise((resolve) => {
       exec(cmd, (err, stdout, stderr) => {
