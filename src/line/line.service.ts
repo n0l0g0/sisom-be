@@ -518,7 +518,7 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  private async notifyStaffMaintenanceCreated(maintenanceId: string) {
+  async notifyStaffMaintenanceCreated(maintenanceId: string) {
     const maintenance = await this.prisma.maintenanceRequest.findUnique({
       where: { id: maintenanceId },
       include: {
@@ -590,6 +590,54 @@ export class LineService implements OnModuleInit {
     for (const uid of targets) {
       if (!uid) continue;
       this.setStaffMaintenanceState(uid, maintenance.id);
+      await this.pushFlex(uid, flex);
+    }
+  }
+
+  async notifyStaffMoveoutCreated(maintenanceId: string) {
+    const maintenance = await this.prisma.maintenanceRequest.findUnique({
+      where: { id: maintenanceId },
+      include: {
+        room: {
+          include: { building: true, contracts: { include: { tenant: true }, where: { isActive: true } } },
+        },
+      },
+    });
+    if (!maintenance || !maintenance.room) return;
+    const room = maintenance.room as any;
+    const buildingName = room.building?.name || room.building?.code || '-';
+    const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
+    const tenantName = room.contracts?.[0]?.tenant?.name || '';
+    const phone = room.contracts?.[0]?.tenant?.phone || '';
+    const descFirstLine = (maintenance.description || '')
+      .split('\n')
+      .find((s) => s.trim().length > 0 && !/^TYPE\s*:/i.test(s));
+    const bodyLines = [
+      'มีรายการแจ้งย้ายออกใหม่',
+      locationLine,
+      tenantName || phone ? `ผู้เช่า: ${tenantName || '-'} โทร ${phone || '-'}` : '',
+      descFirstLine || '',
+    ].filter((v) => v && v.trim().length > 0);
+    const flex: any = {
+      type: 'flex',
+      altText: 'มีรายการแจ้งย้ายออกใหม่',
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          contents: bodyLines.map((t) => ({
+            type: 'text',
+            text: t,
+            wrap: true,
+          })),
+        },
+      },
+    };
+    const targets = await this.getLineNotifyTargets();
+    for (const uid of targets) {
+      if (!uid) continue;
       await this.pushFlex(uid, flex);
     }
   }

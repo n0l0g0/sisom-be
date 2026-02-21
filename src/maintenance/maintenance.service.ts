@@ -34,6 +34,21 @@ export class MaintenanceService {
       });
     }
 
+    try {
+      const isMoveOut =
+        /TYPE:\s*MOVE_OUT/i.test(createMaintenanceDto.description || '') ||
+        /ย้ายออก/.test(createMaintenanceDto.title || '');
+      if (isMoveOut) {
+        await this.lineService.notifyStaffMoveoutCreated(maintenanceRequest.id);
+      } else {
+        await this.lineService.notifyStaffMaintenanceCreated(
+          maintenanceRequest.id,
+        );
+      }
+    } catch (e) {
+      console.warn('[maintenance] notify admin via LINE failed', e);
+    }
+
     return maintenanceRequest;
   }
 
