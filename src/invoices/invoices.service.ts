@@ -351,7 +351,7 @@ export class InvoicesService {
     return invoice;
   }
 
-  async settle(id: string, method: 'DEPOSIT' | 'CASH') {
+  async settle(id: string, method: 'DEPOSIT' | 'CASH', paidAt?: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: { contract: true },
@@ -383,6 +383,7 @@ export class InvoicesService {
         amount,
         slipBankRef: method,
         status: PaymentStatus.VERIFIED,
+        paidAt: paidAt ? new Date(paidAt) : new Date(),
       },
     });
     const updated = await this.prisma.invoice.update({

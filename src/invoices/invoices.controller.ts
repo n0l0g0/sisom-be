@@ -72,10 +72,11 @@ export class InvoicesController {
   @Post(':id/settle')
   settleOne(
     @Param('id') id: string,
-    @Body() body: { method: 'DEPOSIT' | 'CASH' },
+    @Body() body: { method: 'DEPOSIT' | 'CASH'; paidAt?: string },
   ) {
     const method = body?.method === 'DEPOSIT' ? 'DEPOSIT' : 'CASH';
-    return this.invoicesService.settle(id, method);
+    const paidAt = typeof body?.paidAt === 'string' ? body.paidAt : undefined;
+    return this.invoicesService.settle(id, method, paidAt);
   }
 
   @Post(':id/cancel')
