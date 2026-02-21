@@ -63,6 +63,71 @@ export const readLogs = (limit = 500): any[] => {
   }
 };
 
+export const queryLogs = (params?: {
+  page?: number;
+  pageSize?: number;
+  user?: string;
+  action?: string;
+  start?: string;
+  end?: string;
+}) => {
+  const file = getLogsFilePath();
+  if (!fs.existsSync(file)) {
+    return { items: [], total: 0, page: 1, pageSize: 50 };
+  }
+  const raw = fs.readFileSync(file, 'utf8');
+  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+  const all = lines
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean) as Array<{
+    timestamp?: string;
+    userId?: string;
+    username?: string;
+    action?: string;
+    path?: string;
+    entityType?: string;
+    entityId?: string;
+    details?: any;
+  }>;
+  const page = Math.max(1, Number(params?.page || 1));
+  const pageSize = Math.max(1, Math.min(500, Number(params?.pageSize || 50)));
+  const user = (params?.user || '').trim().toLowerCase();
+  const action = (params?.action || '').trim().toUpperCase();
+  const start = (params?.start || '').trim();
+  const end = (params?.end || '').trim();
+  const startTime = start ? Date.parse(start) : undefined;
+  const endTime = end ? Date.parse(end) : undefined;
+  const filtered = all
+    .slice()
+    .reverse()
+    .filter((it) => {
+      if (user) {
+        const uid = (it.userId || '').toLowerCase();
+        const uname = (it.username || '').toLowerCase();
+        if (!(uid.includes(user) || uname.includes(user))) return false;
+      }
+      if (action) {
+        if (String(it.action || '').toUpperCase() !== action) return false;
+      }
+      if (startTime || endTime) {
+        const t = it.timestamp ? Date.parse(it.timestamp) : NaN;
+        if (Number.isNaN(t)) return false;
+        if (startTime && t < startTime) return false;
+        if (endTime && t > endTime) return false;
+      }
+      return true;
+    });
+  const total = filtered.length;
+  const offset = (page - 1) * pageSize;
+  const items = filtered.slice(offset, offset + pageSize);
+  return { items, total, page, pageSize };
+};
 export type DeletedStore = Record<string, { ids: string[] }>;
 
 export const readDeletedStore = (): DeletedStore => {
