@@ -153,18 +153,19 @@ export class LineController {
     return this.lineService.getMonthlyUsage();
   }
   @Post('push')
-  async push(@Body() body: { userId?: string; text?: string }) {
+  async push(@Body() body: { userId?: string; text?: string; actor?: string }) {
     const userId = (body?.userId || '').trim();
     const text = (body?.text || '').trim();
+    const actor = (body?.actor || '').trim();
     if (!userId || !text) {
       return { ok: false };
     }
-    await this.lineService.pushMessage(userId, text);
+    await this.lineService.pushMessage(userId, text, actor || undefined);
     return { ok: true };
   }
   @Get('recent-chats')
   async getRecentChats(@Query('limit') limit?: string) {
-    const n = Math.max(1, Math.min(50, Number(limit || '5') || 5));
+    const n = Math.max(1, Math.min(500, Number(limit || '5') || 5));
     const items = this.lineService.getRecentChats(n);
     return { items };
   }

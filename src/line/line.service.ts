@@ -316,6 +316,7 @@ export class LineService implements OnModuleInit {
     type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
     text?: string;
     altText?: string;
+    actor?: string;
   }) {
     const item = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -323,11 +324,12 @@ export class LineService implements OnModuleInit {
       type: entry.type,
       text: entry.text,
       altText: entry.altText,
+      actor: entry.actor,
       timestamp: new Date().toISOString(),
     };
     this.recentChats.push(item);
-    if (this.recentChats.length > 50) {
-      this.recentChats.splice(0, this.recentChats.length - 50);
+    if (this.recentChats.length > 500) {
+      this.recentChats.splice(0, this.recentChats.length - 500);
     }
   }
   getRecentChats(count = 5) {
@@ -5663,7 +5665,7 @@ export class LineService implements OnModuleInit {
     return null;
   }
 
-  async pushMessage(userId: string, text: string) {
+  async pushMessage(userId: string, text: string, actor?: string) {
     if (!this.client) {
       this.logger.warn('Line Client not initialized');
       return;
@@ -5673,7 +5675,7 @@ export class LineService implements OnModuleInit {
       messages: [{ type: 'text', text }],
     });
     this.recordMessage('push_text');
-    this.addRecentChat({ userId, type: 'sent_text', text });
+    this.addRecentChat({ userId, type: 'sent_text', text, actor });
     return res;
   }
 
@@ -6188,7 +6190,7 @@ export class LineService implements OnModuleInit {
       messages: [message as messagingApi.Message],
     });
     this.recordMessage('push_flex');
-    this.addRecentChat({ userId, type: 'sent_flex', altText });
+    this.addRecentChat({ userId, type: 'sent_flex', altText, actor: undefined });
     return res;
   }
 
