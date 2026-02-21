@@ -3,6 +3,8 @@ import { messagingApi, WebhookEvent } from '@line/bot-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SlipOkService } from '../slipok/slipok.service';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   createWriteStream,
   readFileSync,
@@ -141,6 +143,63 @@ export class LineService implements OnModuleInit {
       .map((u) => u.lineUserId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
     return Array.from(new Set(targets));
+  }
+  private getUsageFilePath(): string {
+    const dir = path.resolve('/app/uploads');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, 'line-usage.json');
+  }
+  private readUsageStore(): Record<string, any> {
+    try {
+      const file = this.getUsageFilePath();
+      if (!fs.existsSync(file)) return {};
+      const raw = fs.readFileSync(file, 'utf8');
+      if (!raw.trim()) return {};
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') return {};
+      return obj;
+    } catch {
+      return {};
+    }
+  }
+  private writeUsageStore(store: Record<string, any>) {
+    try {
+      const file = this.getUsageFilePath();
+      fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
+    } catch {}
+  }
+  private recordMessage(kind: 'push_text' | 'push_flex') {
+    const store = this.readUsageStore();
+    const key = new Date().toISOString().slice(0, 7);
+    const month = (store[key] || {}) as { push_text?: number; push_flex?: number };
+    month.push_text = Number(month.push_text || 0) + (kind === 'push_text' ? 1 : 0);
+    month.push_flex = Number(month.push_flex || 0) + (kind === 'push_flex' ? 1 : 0);
+    store[key] = month;
+    this.writeUsageStore(store);
+  }
+  async getMonthlyUsage() {
+    const store = this.readUsageStore();
+    const key = new Date().toISOString().slice(0, 7);
+    const month = (store[key] || {}) as { push_text?: number; push_flex?: number };
+    const pushText = Number(month.push_text || 0);
+    const pushFlex = Number(month.push_flex || 0);
+    const sent = pushText + pushFlex;
+    const limit =
+      Number(process.env.LINE_MONTHLY_FREE_LIMIT || process.env.LINE_FREE_LIMIT || 300) || 300;
+    const remaining = Math.max(0, limit - sent);
+    const percent = limit > 0 ? Math.min(100, Math.round((sent / limit) * 100)) : 0;
+    return {
+      month: key,
+      sent,
+      limit,
+      remaining,
+      percent,
+      breakdown: { pushText, pushFlex },
+    };
   }
 
   private readonly staffMaintenanceState = new Map<
@@ -5404,10 +5463,12 @@ export class LineService implements OnModuleInit {
       this.logger.warn('Line Client not initialized');
       return;
     }
-    return this.client.pushMessage({
+    const res = await this.client.pushMessage({
       to: userId,
       messages: [{ type: 'text', text }],
     });
+    this.recordMessage('push_text');
+    return res;
   }
 
   getMoveOutStateByTenantId = async (tenantId: string) => {
@@ -5916,10 +5977,12 @@ export class LineService implements OnModuleInit {
     } catch (e) {
       void e;
     }
-    return this.client.pushMessage({
+    const res = await this.client.pushMessage({
       to: userId,
       messages: [message as messagingApi.Message],
     });
+    this.recordMessage('push_flex');
+    return res;
   }
 
   private buildSlipFlex(

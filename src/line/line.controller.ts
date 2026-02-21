@@ -147,4 +147,9 @@ export class LineController {
   async notifyMoveoutDue(@Body() body?: { date?: string }) {
     return this.lineService.notifyMoveoutForDate(body?.date);
   }
+
+  @Get('usage')
+  async getUsage() {
+    return this.lineService.getMonthlyUsage();
+  }
 }
