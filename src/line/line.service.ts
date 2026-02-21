@@ -187,9 +187,38 @@ export class LineService implements OnModuleInit {
     const month = (store[key] || {}) as { push_text?: number; push_flex?: number };
     const pushText = Number(month.push_text || 0);
     const pushFlex = Number(month.push_flex || 0);
-    const sent = pushText + pushFlex;
-    const limit =
+    let sentLocal = pushText + pushFlex;
+    let limitLocal =
       Number(process.env.LINE_MONTHLY_FREE_LIMIT || process.env.LINE_FREE_LIMIT || 300) || 300;
+    let sentOfficial: number | undefined;
+    let limitOfficial: number | undefined;
+    try {
+      if (this.channelAccessToken) {
+        const quotaRes = await fetch('https://api.line.me/v2/bot/message/quota', {
+          headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+        });
+        if (quotaRes.ok) {
+          const q = (await quotaRes.json()) as { type?: string; value?: number };
+          if (q?.type === 'limited' && typeof q?.value === 'number') {
+            limitOfficial = q.value;
+          } else if (q?.type === 'unlimited') {
+            limitOfficial = 999999;
+          }
+        }
+        const consRes = await fetch(
+          'https://api.line.me/v2/bot/message/quota/consumption',
+          { headers: { Authorization: `Bearer ${this.channelAccessToken}` } },
+        );
+        if (consRes.ok) {
+          const c = (await consRes.json()) as { totalUsage?: number };
+          if (typeof c?.totalUsage === 'number') {
+            sentOfficial = c.totalUsage;
+          }
+        }
+      }
+    } catch {}
+    const sent = typeof sentOfficial === 'number' ? sentOfficial : sentLocal;
+    const limit = typeof limitOfficial === 'number' ? limitOfficial : limitLocal;
     const remaining = Math.max(0, limit - sent);
     const percent = limit > 0 ? Math.min(100, Math.round((sent / limit) * 100)) : 0;
     return {
