@@ -3467,13 +3467,26 @@ export class LineService implements OnModuleInit {
           },
         },
         orderBy: [{ year: 'asc' }, { month: 'asc' }, { createdAt: 'asc' }],
-        take: 10,
       });
       if (invoices.length === 0) {
         return this.replyText(event.replyToken, 'ตอนนี้ไม่มีห้องค้างชำระ');
       }
-      const carousel = this.buildUnpaidCarouselForStaff(invoices);
-      return this.replyFlex(event.replyToken, carousel);
+      const groups: any[][] = [];
+      for (let i = 0; i < invoices.length; i += 10) {
+        groups.push(invoices.slice(i, i + 10));
+      }
+      const messages = groups.map((g) => this.buildUnpaidCarouselForStaff(g));
+      if (messages.length <= 5) {
+        return this.replyFlexMany(event.replyToken, messages);
+      } else {
+        await this.replyFlexMany(event.replyToken, messages.slice(0, 5));
+        if (userId) {
+          for (let i = 5; i < messages.length; i++) {
+            await this.pushFlex(userId, messages[i]);
+          }
+        }
+        return null;
+      }
     }
 
     if (text === 'รายการแจ้งซ่อม') {
@@ -4403,6 +4416,13 @@ export class LineService implements OnModuleInit {
     return this.client.replyMessage({
       replyToken,
       messages: [message] as any,
+    });
+  }
+  private async replyFlexMany(replyToken: string, messages: any[]) {
+    if (!this.client) return;
+    return this.client.replyMessage({
+      replyToken,
+      messages: messages as any,
     });
   }
 
