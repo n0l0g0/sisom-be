@@ -168,4 +168,13 @@ export class LineController {
     const items = this.lineService.getRecentChats(n);
     return { items };
   }
+  @Get('profiles')
+  async getProfiles(@Query('userIds') userIds?: string) {
+    const list =
+      (userIds || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0) || [];
+    return this.lineService.apiGetLineProfiles(list);
+  }
 }

@@ -134,6 +134,10 @@ export class LineService implements OnModuleInit {
     altText?: string;
     timestamp: string;
   }> = [];
+  private readonly lineProfileCache = new Map<
+    string,
+    { displayName: string; pictureUrl?: string; updatedAt: number }
+  >();
 
   private async getLineNotifyTargets(): Promise<string[]> {
     const users = await this.prisma.user.findMany({
@@ -181,6 +185,53 @@ export class LineService implements OnModuleInit {
       const file = this.getUsageFilePath();
       fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
     } catch {}
+  }
+  private async getLineProfile(userId: string): Promise<{
+    displayName?: string;
+    pictureUrl?: string;
+  }> {
+    const uid = (userId || '').trim();
+    if (!uid || !this.client) return {};
+    const now = Date.now();
+    const cached = this.lineProfileCache.get(uid);
+    if (cached && now - cached.updatedAt < 7 * 24 * 60 * 60 * 1000) {
+      return { displayName: cached.displayName, pictureUrl: cached.pictureUrl };
+    }
+    try {
+      const res = await (this.client as any).getProfile(uid);
+      const displayName =
+        typeof res?.displayName === 'string' ? res.displayName : undefined;
+      const pictureUrl =
+        typeof res?.pictureUrl === 'string' ? res.pictureUrl : undefined;
+      if (displayName || pictureUrl) {
+        this.lineProfileCache.set(uid, {
+          displayName: displayName || '',
+          pictureUrl,
+          updatedAt: now,
+        });
+      }
+      return { displayName, pictureUrl };
+    } catch {
+      return {};
+    }
+  }
+  async apiGetLineProfiles(userIds: string[]) {
+    const list = Array.from(
+      new Set(
+        (userIds || [])
+          .map((s) => (s || '').trim())
+          .filter((s) => s.length > 0),
+      ),
+    );
+    const results: Record<
+      string,
+      { displayName?: string; pictureUrl?: string }
+    > = {};
+    for (const uid of list) {
+      const p = await this.getLineProfile(uid);
+      results[uid] = p;
+    }
+    return { profiles: results };
   }
   private recordMessage(kind: 'push_text' | 'push_flex') {
     const store = this.readUsageStore();
