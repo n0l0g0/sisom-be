@@ -132,6 +132,16 @@ export class LineService implements OnModuleInit {
     type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
     text?: string;
     altText?: string;
+    actor?: string;
+    timestamp: string;
+  }> = [];
+  private chatsStore: Array<{
+    id: string;
+    userId: string;
+    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+    text?: string;
+    altText?: string;
+    actor?: string;
     timestamp: string;
   }> = [];
   private readonly lineProfileCache = new Map<
@@ -166,6 +176,57 @@ export class LineService implements OnModuleInit {
       } catch {}
     }
     return path.join(dir, 'line-usage.json');
+  }
+  private getChatsFilePath(): string {
+    const dir = path.resolve('/app/uploads');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, 'line-chats.json');
+  }
+  private readChatsStore(): Array<{
+    id: string;
+    userId: string;
+    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+    text?: string;
+    altText?: string;
+    actor?: string;
+    timestamp: string;
+  }> {
+    try {
+      const file = this.getChatsFilePath();
+      if (!fs.existsSync(file)) return [];
+      const raw = fs.readFileSync(file, 'utf8');
+      if (!raw.trim()) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(
+        (x) =>
+          x &&
+          typeof x.id === 'string' &&
+          typeof x.userId === 'string' &&
+          typeof x.type === 'string' &&
+          typeof x.timestamp === 'string',
+      );
+    } catch {
+      return [];
+    }
+  }
+  private writeChatsStore(store: Array<{
+    id: string;
+    userId: string;
+    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+    text?: string;
+    altText?: string;
+    actor?: string;
+    timestamp: string;
+  }>) {
+    try {
+      const file = this.getChatsFilePath();
+      fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
+    } catch {}
   }
   private readUsageStore(): Record<string, any> {
     try {
@@ -331,10 +392,32 @@ export class LineService implements OnModuleInit {
     if (this.recentChats.length > 500) {
       this.recentChats.splice(0, this.recentChats.length - 500);
     }
+    // Persist full chat history
+    this.chatsStore.push(item);
+    if (this.chatsStore.length > 20000) {
+      this.chatsStore.splice(0, this.chatsStore.length - 20000);
+    }
+    this.writeChatsStore(this.chatsStore);
   }
   getRecentChats(count = 5) {
     const n = Math.max(1, Math.min(50, count || 5));
     return this.recentChats.slice(-n).reverse();
+  }
+  getChatsByUser(userId: string, limit = 50, before?: string) {
+    const uid = (userId || '').trim();
+    if (!uid) return [];
+    const target = (this.chatsStore || []).filter((c) => c.userId === uid);
+    const sorted = target.sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+    );
+    const filtered = before
+      ? sorted.filter(
+          (c) => new Date(c.timestamp).getTime() < new Date(before).getTime(),
+        )
+      : sorted;
+    const n = Math.max(1, Math.min(500, limit || 50));
+    return filtered.slice(-n).reverse();
   }
 
   private readonly staffMaintenanceState = new Map<
@@ -1130,6 +1213,18 @@ export class LineService implements OnModuleInit {
       }
     }
     this.logger.log(`Loaded ${users.length} admin/owner users from DB`);
+    // Load persisted chats from disk
+    try {
+      this.chatsStore = this.readChatsStore();
+      // Warm up recentChats with the latest 500
+      const latest = this.chatsStore.slice(-500);
+      this.recentChats.splice(0, this.recentChats.length, ...latest);
+      this.logger.log(
+        `Loaded ${this.chatsStore.length} chat logs from disk, recent=${latest.length}`,
+      );
+    } catch {
+      // ignore
+    }
   }
 
   private async setDefaultRichMenuGeneral() {

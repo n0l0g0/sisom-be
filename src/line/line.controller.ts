@@ -169,6 +169,18 @@ export class LineController {
     const items = this.lineService.getRecentChats(n);
     return { items };
   }
+  @Get('chats')
+  async getChatsByUser(
+    @Query('userId') userId?: string,
+    @Query('limit') limit?: string,
+    @Query('before') before?: string,
+  ) {
+    const uid = (userId || '').trim();
+    if (!uid) return { items: [] };
+    const n = Math.max(1, Math.min(500, Number(limit || '50') || 50));
+    const items = this.lineService.getChatsByUser(uid, n, before);
+    return { items };
+  }
   @Get('profiles')
   async getProfiles(@Query('userIds') userIds?: string) {
     const list =
