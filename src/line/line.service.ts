@@ -694,13 +694,15 @@ export class LineService implements OnModuleInit {
     const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const tenantName = room.contracts?.[0]?.tenant?.name || '';
     const phone = room.contracts?.[0]?.tenant?.phone || '';
-    const descFirstLine = (maintenance.description || '')
-      .split('\n')
-      .find((s) => s.trim().length > 0 && !/^TYPE\s*:/i.test(s));
+    const lines = (maintenance.description || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    const descFirstLine = lines.find((s) => s.trim().length > 0 && !/^TYPE\s*:/i.test(s) && !/^MOVEOUT_DATE\s*:/i.test(s));
+    const dateLine = lines.find((s) => /^MOVEOUT_DATE\s*:/i.test(s));
+    const moveoutDate = dateLine ? dateLine.split(':').slice(1).join(':').trim() : undefined;
     const bodyLines = [
       'มีรายการแจ้งย้ายออกใหม่',
       locationLine,
       tenantName || phone ? `ผู้เช่า: ${tenantName || '-'} โทร ${phone || '-'}` : '',
+      moveoutDate ? `กำหนดออก: ${moveoutDate}` : '',
       descFirstLine || '',
     ].filter((v) => v && v.trim().length > 0);
     const flex: any = {
