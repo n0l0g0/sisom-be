@@ -18,8 +18,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "deploy:docker": "docker-compose build backend && docker-compose up -d backend",
-    "postdeploy:docker": "git add . && git commit -m \"chore(deploy): BE auto-commit after docker deploy - $(date '+%Y-%m-%d %H:%M:%S %z')\" || true && git push origin main"
+    "deploy:docker": "docker rm -f sisom-backend || true && COMPOSE_PROJECT_NAME=sisomapt-be docker-compose down --remove-orphans && COMPOSE_PROJECT_NAME=sisomapt-be docker-compose build backend && COMPOSE_PROJECT_NAME=sisomapt-be docker-compose up -d --force-recreate backend",
+    "postdeploy:docker": "git add . && git commit -m \"chore(deploy): BE auto-commit after docker deploy - $(date '+%Y-%m-%d %H:%M:%S %z')\" || true && git push origin main && docker container prune -f"
   },
   "dependencies": {
     "@line/bot-sdk": "10.6.0",
