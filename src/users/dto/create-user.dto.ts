@@ -1,5 +1,10 @@
 import { IsString, IsOptional, IsArray, IsEnum } from 'class-validator';
-import { Role } from '@prisma/client';
+import type { Role } from '@prisma/client';
+
+const RoleEnum = {
+  OWNER: 'OWNER',
+  ADMIN: 'ADMIN',
+} as const;
 
 export class CreateUserDto {
   @IsString()
@@ -16,7 +21,7 @@ export class CreateUserDto {
   @IsOptional()
   phone?: string;
 
-  @IsEnum(Role)
+  @IsEnum(RoleEnum)
   @IsOptional()
   role?: Role;
 
