@@ -300,6 +300,16 @@ export class InvoicesService {
     } else {
       waterAmount = usage * unitPrice;
     }
+    if (
+      (waterFeeMethod === WaterFeeMethod.METER_USAGE ||
+        waterFeeMethod === WaterFeeMethod.METER_USAGE_MIN_AMOUNT ||
+        waterFeeMethod === WaterFeeMethod.METER_USAGE_MIN_UNITS ||
+        waterFeeMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE ||
+        waterFeeMethod === WaterFeeMethod.METER_USAGE_TIERED) &&
+      usage < 5
+    ) {
+      waterAmount = 35;
+    }
 
     const rentAmount = this.round(Number(contract.currentRent));
     const otherFees = this.round(commonFee);
