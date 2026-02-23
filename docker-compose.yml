@@ -11,5 +11,5 @@ services:
       - NODE_ENV=production
       - PORT=3000
     volumes:
-      - ./uploads:/app/uploads
+      - /root/uploads:/app/uploads
     restart: unless-stopped
