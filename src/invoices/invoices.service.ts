@@ -162,20 +162,28 @@ export class InvoicesService {
     };
     let electricAmount = 0;
     const eUsage = Math.max(0, electricUsage);
+    const electricOverride = Math.max(
+      0,
+      Number(contract.room?.electricOverrideAmount ?? 0),
+    );
     if (electricFeeMethod === WaterFeeMethod.FLAT_MONTHLY) {
-      electricAmount = Number(dormConfig?.electricFlatMonthlyFee ?? 0);
+      electricAmount =
+        electricOverride > 0
+          ? electricOverride
+          : Number(dormConfig?.electricFlatMonthlyFee ?? 0);
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
-      electricAmount = Math.max(eUsage * electricUnitPrice, electricMinAmount);
+      const eUnit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount = Math.max(eUsage * eUnit, electricMinAmount);
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_MIN_UNITS) {
+      const eUnit = electricOverride > 0 ? electricOverride : electricUnitPrice;
       electricAmount =
-        eUsage <= electricMinUnits
-          ? electricMinAmount
-          : eUsage * electricUnitPrice;
+        eUsage <= electricMinUnits ? electricMinAmount : eUsage * eUnit;
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE) {
+      const eUnit = electricOverride > 0 ? electricOverride : electricUnitPrice;
       electricAmount =
         eUsage <= electricMinUnits
           ? electricMinAmount
-          : electricMinAmount + (eUsage - electricMinUnits) * electricUnitPrice;
+          : electricMinAmount + (eUsage - electricMinUnits) * eUnit;
     } else if (electricFeeMethod === WaterFeeMethod.METER_USAGE_TIERED) {
       const eTiers = Array.isArray(dormConfig?.electricTieredRates)
         ? (dormConfig?.electricTieredRates as Array<{
@@ -186,13 +194,21 @@ export class InvoicesService {
         : [];
       electricAmount = computeElectricTieredAmount(eUsage, eTiers);
     } else {
-      electricAmount = eUsage * electricUnitPrice;
+      const eUnit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount = eUsage * eUnit;
     }
     const waterFeeMethod =
       dormConfig?.waterFeeMethod ?? WaterFeeMethod.METER_USAGE;
     let waterAmount = 0;
     const usage = Math.max(0, waterUsage);
-    const unitPrice = Math.max(0, waterUnitPrice);
+    const waterOverride = Math.max(
+      0,
+      Number(contract.room?.waterOverrideAmount ?? 0),
+    );
+    const unitPrice =
+      waterOverride > 0 && waterFeeMethod !== WaterFeeMethod.FLAT_MONTHLY
+        ? Math.max(0, waterOverride)
+        : Math.max(0, waterUnitPrice);
     const minAmount = Math.max(0, Number(dormConfig?.waterMinAmount ?? 0));
     const minUnits = Math.max(0, Number(dormConfig?.waterMinUnits ?? 0));
 
@@ -253,13 +269,12 @@ export class InvoicesService {
       return total;
     };
 
-    const waterOverride = Number(contract.room?.waterOverrideAmount ?? 0);
-    const electricOverride = Number(contract.room?.electricOverrideAmount ?? 0);
-
-    if (waterOverride > 0) {
-      waterAmount = waterOverride;
-    } else if (waterFeeMethod === WaterFeeMethod.FLAT_MONTHLY) {
-      waterAmount = Number(dormConfig?.waterFlatMonthlyFee ?? 0);
+    if (waterFeeMethod === WaterFeeMethod.FLAT_MONTHLY) {
+      if (waterOverride > 0) {
+        waterAmount = waterOverride;
+      } else {
+        waterAmount = Number(dormConfig?.waterFlatMonthlyFee ?? 0);
+      }
     } else if (waterFeeMethod === WaterFeeMethod.FLAT_PER_PERSON) {
       const perPerson = Number(dormConfig?.waterFlatPerPersonFee ?? 0);
       const occupants = Number(contract.occupantCount ?? 1);
@@ -284,10 +299,6 @@ export class InvoicesService {
       waterAmount = computeTieredAmount(usage, tiers);
     } else {
       waterAmount = usage * unitPrice;
-    }
-
-    if (electricOverride > 0) {
-      electricAmount = electricOverride;
     }
 
     const rentAmount = this.round(Number(contract.currentRent));

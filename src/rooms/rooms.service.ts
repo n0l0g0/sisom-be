@@ -318,6 +318,7 @@ export class RoomsService {
       data: {
         number: nextNumber,
         floor: updateRoomDto.floor ?? undefined,
+        status: updateRoomDto.status ?? undefined,
         pricePerMonth:
           updateRoomDto.pricePerMonth !== undefined
             ? updateRoomDto.pricePerMonth

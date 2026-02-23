@@ -214,15 +214,17 @@ export class LineService implements OnModuleInit {
       return [];
     }
   }
-  private writeChatsStore(store: Array<{
-    id: string;
-    userId: string;
-    type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
-    text?: string;
-    altText?: string;
-    actor?: string;
-    timestamp: string;
-  }>) {
+  private writeChatsStore(
+    store: Array<{
+      id: string;
+      userId: string;
+      type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+      text?: string;
+      altText?: string;
+      actor?: string;
+      timestamp: string;
+    }>,
+  ) {
     try {
       const file = this.getChatsFilePath();
       fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
@@ -684,7 +686,10 @@ export class LineService implements OnModuleInit {
       where: { id: maintenanceId },
       include: {
         room: {
-          include: { building: true, contracts: { include: { tenant: true }, where: { isActive: true } } },
+          include: {
+            building: true,
+            contracts: { include: { tenant: true }, where: { isActive: true } },
+          },
         },
       },
     });
@@ -694,14 +699,26 @@ export class LineService implements OnModuleInit {
     const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const tenantName = room.contracts?.[0]?.tenant?.name || '';
     const phone = room.contracts?.[0]?.tenant?.phone || '';
-    const lines = (maintenance.description || '').split('\n').map((l) => l.trim()).filter(Boolean);
-    const descFirstLine = lines.find((s) => s.trim().length > 0 && !/^TYPE\s*:/i.test(s) && !/^MOVEOUT_DATE\s*:/i.test(s));
+    const lines = (maintenance.description || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const descFirstLine = lines.find(
+      (s) =>
+        s.trim().length > 0 &&
+        !/^TYPE\s*:/i.test(s) &&
+        !/^MOVEOUT_DATE\s*:/i.test(s),
+    );
     const dateLine = lines.find((s) => /^MOVEOUT_DATE\s*:/i.test(s));
-    const moveoutDate = dateLine ? dateLine.split(':').slice(1).join(':').trim() : undefined;
+    const moveoutDate = dateLine
+      ? dateLine.split(':').slice(1).join(':').trim()
+      : undefined;
     const bodyLines = [
       'มีรายการแจ้งย้ายออกใหม่',
       locationLine,
-      tenantName || phone ? `ผู้เช่า: ${tenantName || '-'} โทร ${phone || '-'}` : '',
+      tenantName || phone
+        ? `ผู้เช่า: ${tenantName || '-'} โทร ${phone || '-'}`
+        : '',
       moveoutDate ? `กำหนดออก: ${moveoutDate}` : '',
       descFirstLine || '',
     ].filter((v) => v && v.trim().length > 0);
@@ -6287,7 +6304,12 @@ export class LineService implements OnModuleInit {
       messages: [message as messagingApi.Message],
     });
     this.recordMessage('push_flex');
-    this.addRecentChat({ userId, type: 'sent_flex', altText, actor: undefined });
+    this.addRecentChat({
+      userId,
+      type: 'sent_flex',
+      altText,
+      actor: undefined,
+    });
     return res;
   }
 
