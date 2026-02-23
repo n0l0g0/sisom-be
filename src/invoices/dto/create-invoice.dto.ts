@@ -6,7 +6,15 @@ import {
   IsDateString,
   IsOptional,
 } from 'class-validator';
-import { InvoiceStatus } from '@prisma/client';
+import type { InvoiceStatus } from '@prisma/client';
+
+const InvoiceStatusEnum = {
+  DRAFT: 'DRAFT',
+  SENT: 'SENT',
+  PAID: 'PAID',
+  OVERDUE: 'OVERDUE',
+  CANCELLED: 'CANCELLED',
+} as const;
 
 export class CreateInvoiceDto {
   @IsNotEmpty()
@@ -46,7 +54,7 @@ export class CreateInvoiceDto {
   totalAmount: number;
 
   @IsOptional()
-  @IsEnum(InvoiceStatus)
+  @IsEnum(InvoiceStatusEnum)
   status?: InvoiceStatus;
 
   @IsNotEmpty()
