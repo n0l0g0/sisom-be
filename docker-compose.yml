@@ -5,6 +5,8 @@ services:
     container_name: sisom-backend
     ports:
       - "3010:3000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - PORT=3000
