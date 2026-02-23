@@ -13,12 +13,14 @@ import { UTILITY_RATES } from '../common/constants';
 import { InvoiceStatus, WaterFeeMethod, PaymentStatus } from '@prisma/client';
 import { LineService } from '../line/line.service';
 import { appendLog } from '../activity/logger';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class InvoicesService {
   constructor(
     private prisma: PrismaService,
     private lineService: LineService,
+    private settingsService: SettingsService,
   ) {}
 
   private round(num: number): number {
@@ -83,7 +85,7 @@ export class InvoicesService {
       ? Number(currentReading.waterReading) - Number(prevReading.waterReading)
       : 0;
 
-    const dormConfig = await this.prisma.dormConfig.findFirst();
+    const dormConfig = await this.settingsService.getEffectiveDormConfig();
     const electricUnitPrice = dormConfig
       ? Number(dormConfig.electricUnitPrice)
       : UTILITY_RATES.ELECTRIC_UNIT_PRICE;

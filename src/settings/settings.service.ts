@@ -14,6 +14,66 @@ export class SettingsService {
       orderBy: { updatedAt: 'desc' },
     });
   }
+  async getEffectiveDormConfig() {
+    const local = await this.getDormConfig();
+    let external: any = null;
+    try {
+      const f = (globalThis as any).fetch;
+      if (typeof f === 'function') {
+        const resp = await f('https://cms.washqueue.com/api/settings/rent', {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+        });
+        if (resp && resp.ok) {
+          external = await resp.json();
+        }
+      }
+    } catch {}
+    const pickNum = (v: any, def?: any) => {
+      const nv = Number(v);
+      if (Number.isFinite(nv)) return nv;
+      const nd = Number(def);
+      return Number.isFinite(nd) ? nd : undefined;
+    };
+    const pickEnum = (v: any) => (typeof v === 'string' ? v : undefined);
+    const merged = {
+      ...local,
+      waterUnitPrice:
+        pickNum(external?.waterUnitPrice, local?.waterUnitPrice) ?? 18,
+      waterFeeMethod:
+        pickEnum(external?.waterFeeMethod) ?? local?.waterFeeMethod,
+      waterFlatMonthlyFee:
+        pickNum(external?.waterFlatMonthlyFee, local?.waterFlatMonthlyFee),
+      waterFlatPerPersonFee:
+        pickNum(external?.waterFlatPerPersonFee, local?.waterFlatPerPersonFee),
+      waterMinAmount:
+        pickNum(external?.waterMinAmount, local?.waterMinAmount),
+      waterMinUnits: pickNum(external?.waterMinUnits, local?.waterMinUnits),
+      waterBaseFee: pickNum(external?.waterBaseFee, local?.waterBaseFee),
+      waterTieredRates:
+        external?.waterTieredRates ?? local?.waterTieredRates,
+      electricUnitPrice:
+        pickNum(external?.electricUnitPrice, local?.electricUnitPrice) ?? 7,
+      electricFeeMethod:
+        pickEnum(external?.electricFeeMethod) ?? local?.electricFeeMethod,
+      electricFlatMonthlyFee:
+        pickNum(
+          external?.electricFlatMonthlyFee,
+          local?.electricFlatMonthlyFee,
+        ),
+      electricMinAmount:
+        pickNum(external?.electricMinAmount, local?.electricMinAmount),
+      electricMinUnits:
+        pickNum(external?.electricMinUnits, local?.electricMinUnits),
+      electricBaseFee:
+        pickNum(external?.electricBaseFee, local?.electricBaseFee),
+      electricTieredRates:
+        external?.electricTieredRates ?? local?.electricTieredRates,
+      commonFee: pickNum(external?.commonFee, local?.commonFee) ?? 300,
+      bankAccount: external?.bankAccount ?? local?.bankAccount,
+    } as any;
+    return merged;
+  }
 
   async updateDormConfig(data: UpdateDormConfigDto) {
     const existing = await this.prisma.dormConfig.findFirst();
