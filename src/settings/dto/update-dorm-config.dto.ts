@@ -1,5 +1,16 @@
 import { IsOptional, IsString, IsNumber, IsEnum } from 'class-validator';
-import { Prisma, WaterFeeMethod } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { WaterFeeMethod } from '@prisma/client';
+
+const WaterFeeMethodEnum = {
+  METER_USAGE: 'METER_USAGE',
+  METER_USAGE_MIN_AMOUNT: 'METER_USAGE_MIN_AMOUNT',
+  METER_USAGE_MIN_UNITS: 'METER_USAGE_MIN_UNITS',
+  METER_USAGE_PLUS_BASE: 'METER_USAGE_PLUS_BASE',
+  METER_USAGE_TIERED: 'METER_USAGE_TIERED',
+  FLAT_MONTHLY: 'FLAT_MONTHLY',
+  FLAT_PER_PERSON: 'FLAT_PER_PERSON',
+} as const;
 
 export class UpdateDormConfigDto {
   @IsOptional()
@@ -23,7 +34,7 @@ export class UpdateDormConfigDto {
   waterUnitPrice?: number;
 
   @IsOptional()
-  @IsEnum(WaterFeeMethod)
+  @IsEnum(WaterFeeMethodEnum)
   waterFeeMethod?: WaterFeeMethod;
 
   @IsOptional()
@@ -54,7 +65,7 @@ export class UpdateDormConfigDto {
   electricUnitPrice?: number;
 
   @IsOptional()
-  @IsEnum(WaterFeeMethod)
+  @IsEnum(WaterFeeMethodEnum)
   electricFeeMethod?: WaterFeeMethod;
 
   @IsOptional()
