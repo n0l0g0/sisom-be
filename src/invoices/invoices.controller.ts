@@ -113,4 +113,35 @@ export class InvoicesController {
       Number(payload.year),
     );
   }
+
+  // Auto-send config
+  @Get('auto-send/config')
+  getAutoSendConfig() {
+    return this.invoicesService.getAutoSendConfig();
+  }
+
+  @Post('auto-send/config')
+  setAutoSendConfig(
+    @Body()
+    body: {
+      enabled: boolean;
+      dayOfMonth: number;
+      hour: number;
+      minute?: number;
+      timezone?: string;
+    },
+  ) {
+    return this.invoicesService.setAutoSendConfig({
+      enabled: !!body.enabled,
+      dayOfMonth: Math.max(1, Math.min(28, Number(body.dayOfMonth ?? 1))),
+      hour: Math.max(0, Math.min(23, Number(body.hour ?? 9))),
+      minute: Math.max(0, Math.min(59, Number(body.minute ?? 0))),
+      timezone: String(body.timezone || 'Asia/Bangkok'),
+    });
+  }
+
+  @Post('auto-send/run')
+  runAutoSend() {
+    return this.invoicesService.runAutoSend();
+  }
 }

@@ -14,6 +14,8 @@ import { InvoiceStatus, WaterFeeMethod, PaymentStatus } from '@prisma/client';
 import { LineService } from '../line/line.service';
 import { appendLog } from '../activity/logger';
 import { SettingsService } from '../settings/settings.service';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class InvoicesService {
@@ -930,5 +932,152 @@ export class InvoicesService {
 
     await workbook.xlsx.write(res);
     res.end();
+  }
+
+  // ===== Auto-send configuration & runner =====
+  private getAutoSendFilePath() {
+    const uploadsDir = path.resolve('/app/uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      try {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      } catch {}
+    }
+    return path.join(uploadsDir, 'auto-send.json');
+  }
+  getAutoSendConfig() {
+    try {
+      const p = this.getAutoSendFilePath();
+      if (!fs.existsSync(p)) {
+        return {
+          enabled: false,
+          dayOfMonth: 1,
+          hour: 9,
+          minute: 0,
+          timezone: 'Asia/Bangkok',
+          lastRunAt: null,
+        };
+      }
+      const raw = fs.readFileSync(p, 'utf8');
+      const parsed = JSON.parse(raw);
+      return {
+        enabled: !!parsed.enabled,
+        dayOfMonth: Math.max(1, Math.min(28, Number(parsed.dayOfMonth ?? 1))),
+        hour: Math.max(0, Math.min(23, Number(parsed.hour ?? 9))),
+        minute: Math.max(0, Math.min(59, Number(parsed.minute ?? 0))),
+        timezone: typeof parsed.timezone === 'string' ? parsed.timezone : 'Asia/Bangkok',
+        lastRunAt: parsed.lastRunAt ?? null,
+      };
+    } catch {
+      return {
+        enabled: false,
+        dayOfMonth: 1,
+        hour: 9,
+        minute: 0,
+        timezone: 'Asia/Bangkok',
+        lastRunAt: null,
+      };
+    }
+  }
+  setAutoSendConfig(payload: {
+    enabled: boolean;
+    dayOfMonth: number;
+    hour: number;
+    minute?: number;
+    timezone?: string;
+  }) {
+    const p = this.getAutoSendFilePath();
+    const current = this.getAutoSendConfig();
+    const next = {
+      enabled: !!payload.enabled,
+      dayOfMonth: Math.max(1, Math.min(28, Number(payload.dayOfMonth ?? current.dayOfMonth))),
+      hour: Math.max(0, Math.min(23, Number(payload.hour ?? current.hour))),
+      minute: Math.max(0, Math.min(59, Number(payload.minute ?? current.minute))),
+      timezone: String(payload.timezone || current.timezone || 'Asia/Bangkok'),
+      lastRunAt: current.lastRunAt ?? null,
+    };
+    try {
+      fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+    } catch {}
+    return next;
+  }
+  async runAutoSend() {
+    const cfg = this.getAutoSendConfig();
+    if (!cfg.enabled) return { ok: false, reason: 'disabled' };
+    // Compute current time in target timezone
+    const tz = cfg.timezone || 'Asia/Bangkok';
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    }).formatToParts(new Date());
+    const get = (t: string) =>
+      Number(parts.find((p) => p.type === t)?.value || 0);
+    const year = get('year');
+    const month = get('month');
+    const day = get('day');
+    const hour = get('hour');
+    const minute = get('minute');
+    const now = new Date();
+    // Match schedule
+    if (day !== cfg.dayOfMonth) return { ok: false, reason: 'day_mismatch' };
+    if (hour !== cfg.hour) return { ok: false, reason: 'hour_mismatch' };
+    if (minute !== (cfg.minute ?? 0)) return { ok: false, reason: 'minute_mismatch' };
+    // Prevent duplicate run within same minute
+    try {
+      const last = cfg.lastRunAt ? new Date(cfg.lastRunAt) : null;
+      if (last) {
+        const diff = Math.abs(now.getTime() - last.getTime());
+        if (diff < 60_000) {
+          return { ok: false, reason: 'already_ran' };
+        }
+      }
+    } catch {}
+    // Send all invoices for current month/year with status DRAFT
+    const invoices = await this.prisma.invoice.findMany({
+      where: { month, year, status: InvoiceStatus.DRAFT },
+      include: {
+        contract: {
+          include: { tenant: true, room: { include: { building: true } } },
+        },
+      },
+    });
+    const dormConfig = await this.prisma.dormConfig.findFirst();
+    const bankNote = dormConfig?.bankAccount
+      ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
+      : undefined;
+    for (const inv of invoices) {
+      const tenant = inv.contract?.tenant;
+      const room = inv.contract?.room;
+      if (tenant?.lineUserId && room?.number) {
+        await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+          room: room.number,
+          month: inv.month,
+          year: inv.year,
+          rentAmount: Number(inv.rentAmount),
+          waterAmount: Number(inv.waterAmount),
+          electricAmount: Number(inv.electricAmount),
+          otherFees: Number(inv.otherFees || 0),
+          discount: Number(inv.discount || 0),
+          totalAmount: Number(inv.totalAmount),
+          buildingLabel: (room as any)?.building?.name || (room as any)?.building?.code || undefined,
+          bankInstruction: bankNote,
+        });
+      }
+    }
+    await this.prisma.invoice.updateMany({
+      where: { month, year, status: InvoiceStatus.DRAFT },
+      data: { status: InvoiceStatus.SENT },
+    });
+    // Update lastRunAt
+    const p = this.getAutoSendFilePath();
+    const next = { ...cfg, lastRunAt: new Date().toISOString() };
+    try {
+      fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+    } catch {}
+    return { ok: true, count: invoices.length, month, year };
   }
 }
