@@ -862,6 +862,57 @@ export class InvoicesService {
     return { ok: true, count: invoices.length };
   }
 
+  async sendForRoom(month: number, year: number, roomId: string) {
+    const invoice = await this.prisma.invoice.findFirst({
+      where: {
+        month,
+        year,
+        contract: {
+          roomId,
+        },
+      },
+      include: {
+        contract: {
+          include: { tenant: true, room: { include: { building: true } } },
+        },
+      },
+    });
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found for this room and period');
+    }
+    const dormConfig = await this.prisma.dormConfig.findFirst();
+    const bankNote = dormConfig?.bankAccount
+      ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
+      : undefined;
+    const tenant = invoice.contract?.tenant;
+    const room = invoice.contract?.room;
+    if (tenant?.lineUserId && room?.number) {
+      await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+        room: room.number,
+        month: invoice.month,
+        year: invoice.year,
+        rentAmount: Number(invoice.rentAmount),
+        waterAmount: Number(invoice.waterAmount),
+        electricAmount: Number(invoice.electricAmount),
+        otherFees: Number(invoice.otherFees || 0),
+        discount: Number(invoice.discount || 0),
+        totalAmount: Number(invoice.totalAmount),
+        buildingLabel:
+          (room as any)?.building?.name ||
+          (room as any)?.building?.code ||
+          undefined,
+        bankInstruction: bankNote,
+      });
+    }
+    if (invoice.status !== InvoiceStatus.SENT) {
+      await this.prisma.invoice.update({
+        where: { id: invoice.id },
+        data: { status: InvoiceStatus.SENT },
+      });
+    }
+    return { ok: true, id: invoice.id };
+  }
+
   async export(month: number, year: number, res: Response) {
     const invoices = await this.prisma.invoice.findMany({
       where: { month, year },
@@ -964,7 +1015,10 @@ export class InvoicesService {
         dayOfMonth: Math.max(1, Math.min(28, Number(parsed.dayOfMonth ?? 1))),
         hour: Math.max(0, Math.min(23, Number(parsed.hour ?? 9))),
         minute: Math.max(0, Math.min(59, Number(parsed.minute ?? 0))),
-        timezone: typeof parsed.timezone === 'string' ? parsed.timezone : 'Asia/Bangkok',
+        timezone:
+          typeof parsed.timezone === 'string'
+            ? parsed.timezone
+            : 'Asia/Bangkok',
         lastRunAt: parsed.lastRunAt ?? null,
       };
     } catch {
@@ -989,9 +1043,15 @@ export class InvoicesService {
     const current = this.getAutoSendConfig();
     const next = {
       enabled: !!payload.enabled,
-      dayOfMonth: Math.max(1, Math.min(28, Number(payload.dayOfMonth ?? current.dayOfMonth))),
+      dayOfMonth: Math.max(
+        1,
+        Math.min(28, Number(payload.dayOfMonth ?? current.dayOfMonth)),
+      ),
       hour: Math.max(0, Math.min(23, Number(payload.hour ?? current.hour))),
-      minute: Math.max(0, Math.min(59, Number(payload.minute ?? current.minute))),
+      minute: Math.max(
+        0,
+        Math.min(59, Number(payload.minute ?? current.minute)),
+      ),
       timezone: String(payload.timezone || current.timezone || 'Asia/Bangkok'),
       lastRunAt: current.lastRunAt ?? null,
     };
@@ -1025,7 +1085,8 @@ export class InvoicesService {
     // Match schedule
     if (day !== cfg.dayOfMonth) return { ok: false, reason: 'day_mismatch' };
     if (hour !== cfg.hour) return { ok: false, reason: 'hour_mismatch' };
-    if (minute !== (cfg.minute ?? 0)) return { ok: false, reason: 'minute_mismatch' };
+    if (minute !== (cfg.minute ?? 0))
+      return { ok: false, reason: 'minute_mismatch' };
     // Prevent duplicate run within same minute
     try {
       const last = cfg.lastRunAt ? new Date(cfg.lastRunAt) : null;
@@ -1063,7 +1124,10 @@ export class InvoicesService {
           otherFees: Number(inv.otherFees || 0),
           discount: Number(inv.discount || 0),
           totalAmount: Number(inv.totalAmount),
-          buildingLabel: (room as any)?.building?.name || (room as any)?.building?.code || undefined,
+          buildingLabel:
+            (room as any)?.building?.name ||
+            (room as any)?.building?.code ||
+            undefined,
           bankInstruction: bankNote,
         });
       }

@@ -1,36 +1,13 @@
-version: "3.3"
+version: "2.2"
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: sisomapt-db
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: sisomapt
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - sisom-net
-
   backend:
     build: .
-    container_name: sisomapt-api
+    container_name: sisom-backend
     ports:
-      - "3001:3000"
+      - "3010:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
     volumes:
-      - /root/uploads:/app/uploads
-      - /root/room:/root/room
-    env_file:
-      - ./.env
-    depends_on:
-      - postgres
-    networks:
-      - sisom-net
-
-volumes:
-  postgres_data:
-networks:
-  sisom-net:
-    external: true
+      - ./uploads:/app/uploads
+    restart: unless-stopped

@@ -1,26 +1,18 @@
-FROM public.ecr.aws/docker/library/node:20-alpine AS base
+FROM node:20-alpine AS build
 WORKDIR /app
-
-FROM base AS deps
 COPY package*.json ./
-RUN npm install
-COPY prisma ./prisma
-RUN npx prisma generate
-
-FROM base AS builder
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/prisma ./prisma
+RUN npm ci
 COPY . .
+RUN npx prisma generate || true
 RUN npm run build
 
-FROM public.ecr.aws/docker/library/node:20-alpine AS runner
+FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apk add --no-cache postgresql-client
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
-RUN npm install --omit=dev && npx prisma generate
-COPY --from=builder /app/dist ./dist
-COPY src/tools ./src/tools
+ENV PORT=3000
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+RUN mkdir -p /app/uploads
 EXPOSE 3000
 CMD ["npm", "run", "start:prod"]

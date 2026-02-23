@@ -22,7 +22,7 @@ export class SettingsService {
       if (typeof f === 'function') {
         const resp = await f('https://cms.washqueue.com/api/settings/rent', {
           method: 'GET',
-          headers: { 'Accept': 'application/json' },
+          headers: { Accept: 'application/json' },
         });
         if (resp && resp.ok) {
           external = await resp.json();
@@ -42,31 +42,38 @@ export class SettingsService {
         pickNum(external?.waterUnitPrice, local?.waterUnitPrice) ?? 18,
       waterFeeMethod:
         pickEnum(external?.waterFeeMethod) ?? local?.waterFeeMethod,
-      waterFlatMonthlyFee:
-        pickNum(external?.waterFlatMonthlyFee, local?.waterFlatMonthlyFee),
-      waterFlatPerPersonFee:
-        pickNum(external?.waterFlatPerPersonFee, local?.waterFlatPerPersonFee),
-      waterMinAmount:
-        pickNum(external?.waterMinAmount, local?.waterMinAmount),
+      waterFlatMonthlyFee: pickNum(
+        external?.waterFlatMonthlyFee,
+        local?.waterFlatMonthlyFee,
+      ),
+      waterFlatPerPersonFee: pickNum(
+        external?.waterFlatPerPersonFee,
+        local?.waterFlatPerPersonFee,
+      ),
+      waterMinAmount: pickNum(external?.waterMinAmount, local?.waterMinAmount),
       waterMinUnits: pickNum(external?.waterMinUnits, local?.waterMinUnits),
       waterBaseFee: pickNum(external?.waterBaseFee, local?.waterBaseFee),
-      waterTieredRates:
-        external?.waterTieredRates ?? local?.waterTieredRates,
+      waterTieredRates: external?.waterTieredRates ?? local?.waterTieredRates,
       electricUnitPrice:
         pickNum(external?.electricUnitPrice, local?.electricUnitPrice) ?? 7,
       electricFeeMethod:
         pickEnum(external?.electricFeeMethod) ?? local?.electricFeeMethod,
-      electricFlatMonthlyFee:
-        pickNum(
-          external?.electricFlatMonthlyFee,
-          local?.electricFlatMonthlyFee,
-        ),
-      electricMinAmount:
-        pickNum(external?.electricMinAmount, local?.electricMinAmount),
-      electricMinUnits:
-        pickNum(external?.electricMinUnits, local?.electricMinUnits),
-      electricBaseFee:
-        pickNum(external?.electricBaseFee, local?.electricBaseFee),
+      electricFlatMonthlyFee: pickNum(
+        external?.electricFlatMonthlyFee,
+        local?.electricFlatMonthlyFee,
+      ),
+      electricMinAmount: pickNum(
+        external?.electricMinAmount,
+        local?.electricMinAmount,
+      ),
+      electricMinUnits: pickNum(
+        external?.electricMinUnits,
+        local?.electricMinUnits,
+      ),
+      electricBaseFee: pickNum(
+        external?.electricBaseFee,
+        local?.electricBaseFee,
+      ),
       electricTieredRates:
         external?.electricTieredRates ?? local?.electricTieredRates,
       commonFee: pickNum(external?.commonFee, local?.commonFee) ?? 300,

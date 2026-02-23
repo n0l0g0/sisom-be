@@ -114,6 +114,22 @@ export class InvoicesController {
     );
   }
 
+  @Post('send-room')
+  sendRoom(
+    @Body()
+    payload: {
+      roomId: string;
+      month: number;
+      year: number;
+    },
+  ) {
+    return this.invoicesService.sendForRoom(
+      Number(payload.month),
+      Number(payload.year),
+      String(payload.roomId),
+    );
+  }
+
   // Auto-send config
   @Get('auto-send/config')
   getAutoSendConfig() {
