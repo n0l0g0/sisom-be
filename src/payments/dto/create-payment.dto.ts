@@ -6,7 +6,13 @@ import {
   IsOptional,
   IsDateString,
 } from 'class-validator';
-import { PaymentStatus } from '@prisma/client';
+import type { PaymentStatus } from '@prisma/client';
+
+const PaymentStatusEnum = {
+  PENDING: 'PENDING',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+} as const;
 
 export class CreatePaymentDto {
   @IsNotEmpty()
@@ -26,7 +32,7 @@ export class CreatePaymentDto {
   slipBankRef?: string;
 
   @IsOptional()
-  @IsEnum(PaymentStatus)
+  @IsEnum(PaymentStatusEnum)
   status?: PaymentStatus;
 
   @IsOptional()
