@@ -724,13 +724,27 @@ export class LineService implements OnModuleInit {
       clearTimeout(prev);
       this.staffMaintenanceTimers.delete(key);
     }
-    const t = setTimeout(() => {
-      this.staffMaintenanceState.delete(key);
-      this.staffMaintenanceTimers.delete(key);
-      this.pushMessage(
-        userId,
-        'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว',
-      ).catch(() => {});
+    const t = setTimeout(async () => {
+      try {
+        // Double-check current status; if not pending, skip timeout notice
+        const req = await this.prisma.maintenanceRequest.findUnique({
+          where: { id: maintenanceId },
+          select: { status: true },
+        });
+        const isPending =
+          (req?.status as any) === 'PENDING' || (req?.status as any) === 'IN_PROGRESS';
+        this.staffMaintenanceState.delete(key);
+        this.staffMaintenanceTimers.delete(key);
+        if (!isPending) {
+          return;
+        }
+        await this.pushMessage(
+          userId,
+          'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว',
+        );
+      } catch {
+        // Swallow errors to avoid unhandled rejections
+      }
     }, 120_000);
     this.staffMaintenanceTimers.set(key, t);
   }
