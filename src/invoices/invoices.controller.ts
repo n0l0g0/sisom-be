@@ -165,4 +165,9 @@ export class InvoicesController {
   runMarkOverdue() {
     return this.invoicesService.markOverdue();
   }
+
+  @Post('schedules/notify/run')
+  runNotifySchedules() {
+    return this.invoicesService.notifyPaymentSchedules();
+  }
 }

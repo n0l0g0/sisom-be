@@ -11,7 +11,12 @@ import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { GenerateInvoiceDto } from './dto/generate-invoice.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { UTILITY_RATES } from '../common/constants';
-import { InvoiceStatus, WaterFeeMethod, PaymentStatus } from '@prisma/client';
+import {
+  InvoiceStatus,
+  WaterFeeMethod,
+  PaymentStatus,
+  Role,
+} from '@prisma/client';
 import { LineService } from '../line/line.service';
 import { appendLog } from '../activity/logger';
 import { SettingsService } from '../settings/settings.service';
@@ -341,10 +346,9 @@ export class InvoicesService implements OnModuleInit {
     }
 
     const dormExtra = this.settingsService.getDormExtra();
-    const monthlyDueDay =
-      Number.isFinite(Number(dormExtra?.monthlyDueDay))
-        ? Number(dormExtra?.monthlyDueDay)
-        : 5;
+    const monthlyDueDay = Number.isFinite(Number(dormExtra?.monthlyDueDay))
+      ? Number(dormExtra?.monthlyDueDay)
+      : 5;
     const dueDateObj = new Date(
       year,
       Math.max(0, Math.min(11, month - 1)),
@@ -1083,10 +1087,9 @@ export class InvoicesService implements OnModuleInit {
     const now = new Date();
     // Match schedule
     const dormExtra = this.settingsService.getDormExtra();
-    const effectiveDay =
-      Number.isFinite(Number(dormExtra?.monthlyDueDay))
-        ? Math.max(1, Math.min(28, Number(dormExtra.monthlyDueDay)))
-        : cfg.dayOfMonth;
+    const effectiveDay = Number.isFinite(Number(dormExtra?.monthlyDueDay))
+      ? Math.max(1, Math.min(28, Number(dormExtra.monthlyDueDay)))
+      : cfg.dayOfMonth;
     if (day !== effectiveDay) return { ok: false, reason: 'day_mismatch' };
     if (hour !== cfg.hour) return { ok: false, reason: 'hour_mismatch' };
     if (minute !== (cfg.minute ?? 0))
@@ -1169,6 +1172,115 @@ export class InvoicesService implements OnModuleInit {
     return { ok: true, count: ids.length };
   }
 
+  private getSchedulesFilePath(): string {
+    const dir = path.resolve('/app/uploads');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, 'room-payment-schedule.json');
+  }
+  private readSchedulesStore(): Record<
+    string,
+    { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+  > {
+    try {
+      const p = this.getSchedulesFilePath();
+      if (!fs.existsSync(p)) return {};
+      const raw = fs.readFileSync(p, 'utf8');
+      if (!raw.trim()) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      return parsed as Record<
+        string,
+        { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+      >;
+    } catch {
+      return {};
+    }
+  }
+  private async getStaffNotifyTargets(): Promise<string[]> {
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: { in: [Role.ADMIN, Role.OWNER] },
+        lineUserId: { not: null },
+      },
+      select: { lineUserId: true, permissions: true },
+    });
+    const targets = users
+      .filter((u) => {
+        const perms = Array.isArray(u.permissions)
+          ? (u.permissions as any[])
+          : [];
+        return perms.includes('line_notifications');
+      })
+      .map((u) => u.lineUserId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return Array.from(new Set(targets));
+  }
+  async notifyPaymentSchedules() {
+    const now = new Date();
+    const todayDateStr = now.toISOString().slice(0, 10);
+    const thisMonth = now.getMonth();
+    const thisYear = now.getFullYear();
+    const today = now.getDate();
+    const schedules = this.readSchedulesStore() || {};
+    const staffTargets = await this.getStaffNotifyTargets();
+    let count = 0;
+    for (const [roomId, s] of Object.entries(schedules)) {
+      let match = false;
+      if (typeof s.monthlyDay === 'number' && s.monthlyDay === today) {
+        match = true;
+      } else if (typeof s.oneTimeDate === 'string' && s.oneTimeDate) {
+        const d = new Date(s.oneTimeDate);
+        if (!isNaN(d.getTime())) {
+          const dStr = d.toISOString().slice(0, 10);
+          match = dStr === todayDateStr;
+        }
+      }
+      if (!match) continue;
+      const contract = await this.prisma.contract.findFirst({
+        where: { roomId, isActive: true },
+        include: {
+          room: { include: { building: true } },
+          tenant: true,
+        },
+      });
+      if (!contract) continue;
+      const room = contract.room;
+      const buildingName = room?.building?.name || room?.building?.code || '-';
+      const roomLabel = room?.number || '-';
+      const monthText = new Date(thisYear, thisMonth).toLocaleDateString(
+        'th-TH',
+        { month: 'long', year: 'numeric' },
+      );
+      const msgTenant = [
+        `แจ้งเตือนวันนัดชำระค่าเช่า`,
+        `ห้อง ${roomLabel} ตึก ${buildingName}`,
+        `ประจำเดือน ${monthText}`,
+        `กรุณาชำระตามกำหนดวันนี้`,
+      ].join('\n');
+      const msgStaff = [
+        `แจ้งเตือนวันนัดชำระค่าเช่า (ผู้เช่า)`,
+        `ตึก ${buildingName} ห้อง ${roomLabel}`,
+        `ประจำเดือน ${monthText}`,
+      ].join('\n');
+      const tenantUid = contract.tenant?.lineUserId;
+      if (tenantUid) {
+        try {
+          await this.lineService.pushMessage(tenantUid, msgTenant, 'system');
+        } catch {}
+      }
+      for (const uid of staffTargets) {
+        try {
+          await this.lineService.pushMessage(uid, msgStaff, 'system');
+        } catch {}
+      }
+      count++;
+    }
+    return { ok: true, date: todayDateStr, count };
+  }
   onModuleInit() {
     try {
       cron.schedule('* * * * *', async () => {
@@ -1179,6 +1291,11 @@ export class InvoicesService implements OnModuleInit {
       cron.schedule('15 0 * * *', async () => {
         try {
           await this.markOverdue();
+        } catch {}
+      });
+      cron.schedule('0 9 * * *', async () => {
+        try {
+          await this.notifyPaymentSchedules();
         } catch {}
       });
     } catch {}

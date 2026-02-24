@@ -621,11 +621,9 @@ export class LineService implements OnModuleInit {
     const buildingName = room.building?.name || room.building?.code || '-';
     const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const descText = maintenance.description || '';
-    const bodyLines = [
-      'มีรายการแจ้งซ่อมใหม่',
-      locationLine,
-      descText,
-    ].filter((v) => v && v.trim().length > 0);
+    const bodyLines = ['มีรายการแจ้งซ่อมใหม่', locationLine, descText].filter(
+      (v) => v && v.trim().length > 0,
+    );
     const flex: any = {
       type: 'flex',
       altText: 'มีรายการแจ้งซ่อมใหม่',
@@ -732,7 +730,8 @@ export class LineService implements OnModuleInit {
           select: { status: true },
         });
         const isPending =
-          (req?.status as any) === 'PENDING' || (req?.status as any) === 'IN_PROGRESS';
+          (req?.status as any) === 'PENDING' ||
+          (req?.status as any) === 'IN_PROGRESS';
         this.staffMaintenanceState.delete(key);
         this.staffMaintenanceTimers.delete(key);
         if (!isPending) {
