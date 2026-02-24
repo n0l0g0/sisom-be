@@ -625,7 +625,6 @@ export class LineService implements OnModuleInit {
       'มีรายการแจ้งซ่อมใหม่',
       locationLine,
       descText,
-      'กรุณาเลือกสถานะปิดงานภายใน 2 นาที',
     ].filter((v) => v && v.trim().length > 0);
     const flex: any = {
       type: 'flex',
@@ -642,41 +641,12 @@ export class LineService implements OnModuleInit {
             wrap: true,
           })),
         },
-        footer: {
-          type: 'box',
-          layout: 'horizontal',
-          spacing: 'md',
-          contents: [
-            {
-              type: 'button',
-              style: 'primary',
-              color: '#00B900',
-              action: {
-                type: 'postback',
-                label: 'เสร็จแล้ว',
-                data: `MAINT_DONE=${maintenance.id}`,
-                displayText: 'ปิดงานแจ้งซ่อม: เสร็จแล้ว',
-              },
-            },
-            {
-              type: 'button',
-              style: 'secondary',
-              color: '#666666',
-              action: {
-                type: 'postback',
-                label: 'ยังไม่เสร็จ',
-                data: `MAINT_NOT_DONE=${maintenance.id}`,
-                displayText: 'ปิดงานแจ้งซ่อม: ยังไม่เสร็จ',
-              },
-            },
-          ],
-        },
+        // No footer buttons for staff notification; this is a passive alert only
       },
     };
     const targets = await this.getLineNotifyTargets();
     for (const uid of targets) {
       if (!uid) continue;
-      this.setStaffMaintenanceState(uid, maintenance.id);
       await this.pushFlex(uid, flex);
     }
   }
