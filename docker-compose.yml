@@ -13,3 +13,17 @@ services:
     volumes:
       - /root/uploads:/app/uploads
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api || exit 1"]
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - sisom-be_default
+      - sisomapt-be_default
+
+networks:
+  sisom-be_default:
+    external: true
+  sisomapt-be_default:
+    external: true

@@ -394,7 +394,7 @@ export class RoomsService {
     const store = this.readSchedulesStore() || {};
     const updatedAt = new Date().toISOString();
     if (monthly) {
-      const day = d.getUTCDate();
+      const day = d.getDate();
       store[roomId] = { monthlyDay: day, oneTimeDate: undefined, updatedAt };
     } else {
       store[roomId] = {

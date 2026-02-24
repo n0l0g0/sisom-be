@@ -160,4 +160,9 @@ export class InvoicesController {
   runAutoSend() {
     return this.invoicesService.runAutoSend();
   }
+
+  @Post('overdue/run')
+  runMarkOverdue() {
+    return this.invoicesService.markOverdue();
+  }
 }

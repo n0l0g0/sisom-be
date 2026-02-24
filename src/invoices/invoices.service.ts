@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import type { Response } from 'express';
@@ -16,9 +17,10 @@ import { appendLog } from '../activity/logger';
 import { SettingsService } from '../settings/settings.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import cron from 'node-cron';
 
 @Injectable()
-export class InvoicesService {
+export class InvoicesService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private lineService: LineService,
@@ -338,19 +340,16 @@ export class InvoicesService {
       throw new BadRequestException('Invoice already exists for this period');
     }
 
-    const dueDateObj = new Date(year, month, 5); // Default due date 5th of next month (actually month is 0-based in JS Date but here month is 1-12. Date(year, month, 5) gives next month 5th if month is 0-11? No.
-    // In JS Date(year, monthIndex, day). If month is 1 (Jan), monthIndex 0.
-    // If input month is 2 (Feb), we want Due Date March 5th? Or Feb 5th?
-    // Usually bill is for previous usage, issued at start of month, due by 5th.
-    // If month=2 (Feb), it means bill for Feb (or Jan usage).
-    // Let's assume input month is the billing month.
-    // JS Date(2023, 2, 5) -> March 5th (monthIndex 2).
-    // If we want Feb 5th, we use Date(2023, 1, 5).
-    // The input `month` is likely 1-12.
-    // If we want due date in same month: Date(year, month - 1, 5).
-    // If we want next month: Date(year, month, 5).
-    // The existing code used `new Date(year, month, 5)`.
-    // If month is 12, `new Date(year, 12, 5)` -> Jan 5th next year. Correct for next month due date.
+    const dormExtra = this.settingsService.getDormExtra();
+    const monthlyDueDay =
+      Number.isFinite(Number(dormExtra?.monthlyDueDay))
+        ? Number(dormExtra?.monthlyDueDay)
+        : 5;
+    const dueDateObj = new Date(
+      year,
+      Math.max(0, Math.min(11, month - 1)),
+      Math.max(1, Math.min(31, monthlyDueDay)),
+    );
 
     const invoice = await this.prisma.invoice.create({
       data: {
@@ -1083,7 +1082,12 @@ export class InvoicesService {
     const minute = get('minute');
     const now = new Date();
     // Match schedule
-    if (day !== cfg.dayOfMonth) return { ok: false, reason: 'day_mismatch' };
+    const dormExtra = this.settingsService.getDormExtra();
+    const effectiveDay =
+      Number.isFinite(Number(dormExtra?.monthlyDueDay))
+        ? Math.max(1, Math.min(28, Number(dormExtra.monthlyDueDay)))
+        : cfg.dayOfMonth;
+    if (day !== effectiveDay) return { ok: false, reason: 'day_mismatch' };
     if (hour !== cfg.hour) return { ok: false, reason: 'hour_mismatch' };
     if (minute !== (cfg.minute ?? 0))
       return { ok: false, reason: 'minute_mismatch' };
@@ -1143,5 +1147,40 @@ export class InvoicesService {
       fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
     } catch {}
     return { ok: true, count: invoices.length, month, year };
+  }
+
+  async markOverdue() {
+    const now = new Date();
+    const ids = await this.prisma.invoice.findMany({
+      where: {
+        status: InvoiceStatus.SENT,
+        dueDate: { lt: now },
+      },
+      select: { id: true },
+    });
+    if (ids.length === 0) return { ok: true, count: 0 };
+    await this.prisma.invoice.updateMany({
+      where: {
+        status: InvoiceStatus.SENT,
+        dueDate: { lt: now },
+      },
+      data: { status: InvoiceStatus.OVERDUE },
+    });
+    return { ok: true, count: ids.length };
+  }
+
+  onModuleInit() {
+    try {
+      cron.schedule('* * * * *', async () => {
+        try {
+          await this.runAutoSend();
+        } catch {}
+      });
+      cron.schedule('15 0 * * *', async () => {
+        try {
+          await this.markOverdue();
+        } catch {}
+      });
+    } catch {}
   }
 }

@@ -139,6 +139,10 @@ export class SettingsService {
         mapUrl: typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined,
         lineLink:
           typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
+        monthlyDueDay:
+          Number.isFinite(Number(parsed.monthlyDueDay))
+            ? Number(parsed.monthlyDueDay)
+            : undefined,
       };
     } catch {
       return {};
@@ -152,6 +156,10 @@ export class SettingsService {
       logoUrl: data.logoUrl ?? current.logoUrl,
       mapUrl: data.mapUrl ?? current.mapUrl,
       lineLink: data.lineLink ?? current.lineLink,
+      monthlyDueDay:
+        Number.isFinite(Number(data.monthlyDueDay))
+          ? Number(data.monthlyDueDay)
+          : current.monthlyDueDay,
     };
     try {
       fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
