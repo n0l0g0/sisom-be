@@ -31,19 +31,20 @@
     "@nestjs/platform-express": "11.1.13",
     "@nestjs/swagger": "11.2.6",
     "@prisma/client": "6.19.2",
-    "jimp": "0.22.12",
     "bcrypt": "6.0.0",
     "class-transformer": "0.5.1",
     "class-validator": "0.14.3",
     "dotenv": "17.2.4",
+    "exceljs": "4.4.0",
+    "jimp": "0.22.12",
+    "node-cron": "3.0.3",
     "passport": "0.7.0",
     "passport-jwt": "4.0.1",
     "prisma": "6.19.2",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
     "swagger-ui-express": "5.0.1",
-    "exceljs": "4.4.0",
-    "node-cron": "3.0.3"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.3",
