@@ -268,6 +268,11 @@ export class RoomsService {
             orderBy: { createdAt: 'desc' },
             take: 1,
           },
+          maintenanceRequests: {
+            where: { OR: [{ status: 'PENDING' }, { status: 'IN_PROGRESS' }] },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
           building: true,
         },
       })
