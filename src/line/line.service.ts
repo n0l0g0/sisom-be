@@ -7,13 +7,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   createWriteStream,
+  copyFileSync,
   readFileSync,
   existsSync,
   readdirSync,
   writeFileSync,
   mkdirSync,
 } from 'fs';
-import { join, resolve } from 'path';
+import { extname, join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import type { ReadableStream as NodeReadableStream } from 'stream/web';
@@ -22,6 +23,7 @@ import {
   MaintenanceStatus,
   PaymentStatus,
   Role,
+  Prisma,
 } from '@prisma/client';
 import Jimp from 'jimp';
 
@@ -39,6 +41,45 @@ type RoomContact = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+type InvoiceBase = Prisma.InvoiceGetPayload<Prisma.InvoiceDefaultArgs>;
+
+type ContractWithRoom = Prisma.ContractGetPayload<{ include: { room: true } }>;
+
+type ContractWithRoomAndInvoices = Prisma.ContractGetPayload<{
+  include: { room: { include: { building: true } }; invoices: true };
+}>;
+
+type ContractWithRoomTenant = Prisma.ContractGetPayload<{
+  include: { room: { include: { building: true } }; tenant: true };
+}>;
+
+type InvoiceWithContract = Prisma.InvoiceGetPayload<{
+  include: {
+    contract: {
+      include: { room: { include: { building: true } }; tenant: true };
+    };
+  };
+}>;
+
+type RoomBase = Prisma.RoomGetPayload<Prisma.RoomDefaultArgs>;
+
+type TenantBase = Prisma.TenantGetPayload<Prisma.TenantDefaultArgs>;
+
+type MaintenanceWithRoom = Prisma.MaintenanceRequestGetPayload<{
+  include: { room: { include: { building: true } } };
+}>;
+
+type MaintenanceWithRoomContracts = Prisma.MaintenanceRequestGetPayload<{
+  include: {
+    room: {
+      include: {
+        building: true;
+        contracts: { include: { tenant: true } };
+      };
+    };
+  };
+}>;
 
 @Injectable()
 export class LineService implements OnModuleInit {
@@ -159,9 +200,7 @@ export class LineService implements OnModuleInit {
     });
     const targets = users
       .filter((u) => {
-        const perms = Array.isArray(u.permissions)
-          ? (u.permissions as any[])
-          : [];
+        const perms = Array.isArray(u.permissions) ? u.permissions : [];
         return perms.includes('line_notifications');
       })
       .map((u) => u.lineUserId)
@@ -173,7 +212,13 @@ export class LineService implements OnModuleInit {
     if (!fs.existsSync(dir)) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `LINE slip preload failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     }
     return path.join(dir, 'line-usage.json');
   }
@@ -182,7 +227,13 @@ export class LineService implements OnModuleInit {
     if (!fs.existsSync(dir)) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `ensure line-chats dir failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     }
     return path.join(dir, 'line-chats.json');
   }
@@ -200,16 +251,25 @@ export class LineService implements OnModuleInit {
       if (!fs.existsSync(file)) return [];
       const raw = fs.readFileSync(file, 'utf8');
       if (!raw.trim()) return [];
-      const arr = JSON.parse(raw);
+      const arr = JSON.parse(raw) as unknown;
       if (!Array.isArray(arr)) return [];
-      return arr.filter(
-        (x) =>
-          x &&
-          typeof x.id === 'string' &&
-          typeof x.userId === 'string' &&
-          typeof x.type === 'string' &&
-          typeof x.timestamp === 'string',
-      );
+      const isEntry = (
+        x: unknown,
+      ): x is {
+        id: string;
+        userId: string;
+        type: 'received_text' | 'received_image' | 'sent_text' | 'sent_flex';
+        text?: string;
+        altText?: string;
+        actor?: string;
+        timestamp: string;
+      } =>
+        !!x &&
+        typeof (x as { id?: unknown }).id === 'string' &&
+        typeof (x as { userId?: unknown }).userId === 'string' &&
+        typeof (x as { type?: unknown }).type === 'string' &&
+        typeof (x as { timestamp?: unknown }).timestamp === 'string';
+      return arr.filter(isEntry);
     } catch {
       return [];
     }
@@ -228,26 +288,43 @@ export class LineService implements OnModuleInit {
     try {
       const file = this.getChatsFilePath();
       fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
-    } catch {}
+    } catch (e) {
+      this.logger.warn(
+        `write chats store failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
-  private readUsageStore(): Record<string, any> {
+  private readUsageStore(): Record<
+    string,
+    { push_text?: number; push_flex?: number }
+  > {
     try {
       const file = this.getUsageFilePath();
       if (!fs.existsSync(file)) return {};
       const raw = fs.readFileSync(file, 'utf8');
       if (!raw.trim()) return {};
-      const obj = JSON.parse(raw);
+      const obj = JSON.parse(raw) as unknown;
       if (!obj || typeof obj !== 'object') return {};
-      return obj;
+      return obj as Record<string, { push_text?: number; push_flex?: number }>;
     } catch {
       return {};
     }
   }
-  private writeUsageStore(store: Record<string, any>) {
+  private writeUsageStore(
+    store: Record<string, { push_text?: number; push_flex?: number }>,
+  ) {
     try {
       const file = this.getUsageFilePath();
       fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
-    } catch {}
+    } catch (e) {
+      this.logger.warn(
+        `write usage store failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
   private async getLineProfile(userId: string): Promise<{
     displayName?: string;
@@ -261,7 +338,10 @@ export class LineService implements OnModuleInit {
       return { displayName: cached.displayName, pictureUrl: cached.pictureUrl };
     }
     try {
-      const res = await (this.client as any).getProfile(uid);
+      const client = this.client as messagingApi.MessagingApiClient & {
+        getProfile: (userId: string) => Promise<unknown>;
+      };
+      const res = await client.getProfile(uid);
       const displayName =
         typeof res?.displayName === 'string' ? res.displayName : undefined;
       const pictureUrl =
@@ -274,7 +354,12 @@ export class LineService implements OnModuleInit {
         });
       }
       return { displayName, pictureUrl };
-    } catch {
+    } catch (e) {
+      this.logger.warn(
+        `get line profile failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
       return {};
     }
   }
@@ -438,10 +523,11 @@ export class LineService implements OnModuleInit {
       if (!existsSync(metaPath)) return null;
       const raw = readFileSync(metaPath, 'utf8');
       if (!raw.trim()) return null;
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as unknown;
       const id =
-        parsed && typeof parsed.richMenuId === 'string'
-          ? parsed.richMenuId.trim()
+        parsed &&
+        typeof (parsed as Record<string, unknown>).richMenuId === 'string'
+          ? String((parsed as Record<string, unknown>).richMenuId).trim()
           : '';
       return id || null;
     } catch {
@@ -624,7 +710,7 @@ export class LineService implements OnModuleInit {
     const bodyLines = ['มีรายการแจ้งซ่อมใหม่', locationLine, descText].filter(
       (v) => v && v.trim().length > 0,
     );
-    const flex: any = {
+    const flex: Record<string, unknown> = {
       type: 'flex',
       altText: 'มีรายการแจ้งซ่อมใหม่',
       contents: {
@@ -650,7 +736,8 @@ export class LineService implements OnModuleInit {
   }
 
   async notifyStaffMoveoutCreated(maintenanceId: string) {
-    const maintenance = await this.prisma.maintenanceRequest.findUnique({
+    const maintenance: MaintenanceWithRoomContracts | null =
+      await this.prisma.maintenanceRequest.findUnique({
       where: { id: maintenanceId },
       include: {
         room: {
@@ -662,7 +749,7 @@ export class LineService implements OnModuleInit {
       },
     });
     if (!maintenance || !maintenance.room) return;
-    const room = maintenance.room as any;
+    const room = maintenance.room;
     const buildingName = room.building?.name || room.building?.code || '-';
     const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const tenantName = room.contracts?.[0]?.tenant?.name || '';
@@ -730,8 +817,8 @@ export class LineService implements OnModuleInit {
           select: { status: true },
         });
         const isPending =
-          (req?.status as any) === 'PENDING' ||
-          (req?.status as any) === 'IN_PROGRESS';
+          req?.status === MaintenanceStatus.PENDING ||
+          req?.status === MaintenanceStatus.IN_PROGRESS;
         this.staffMaintenanceState.delete(key);
         this.staffMaintenanceTimers.delete(key);
         if (!isPending) {
@@ -741,8 +828,12 @@ export class LineService implements OnModuleInit {
           userId,
           'หมดเวลาทำรายการปิดงานสำหรับแจ้งซ่อมนี้แล้ว',
         );
-      } catch {
-        // Swallow errors to avoid unhandled rejections
+      } catch (e) {
+        this.logger.warn(
+          `staff maintenance timeout failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
       }
     }, 120_000);
     this.staffMaintenanceTimers.set(key, t);
@@ -762,7 +853,11 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  createInvoiceFlexMessage(invoice: any, room: any, tenant: any) {
+  createInvoiceFlexMessage(
+    invoice: InvoiceBase,
+    room: RoomBase,
+    tenant: TenantBase,
+  ): Record<string, unknown> {
     const liffUrl = `https://liff.line.me/${this.liffId}/bills/${invoice.id}`;
     const monthName = new Date(invoice.year, invoice.month - 1).toLocaleString(
       'th-TH',
@@ -875,7 +970,10 @@ export class LineService implements OnModuleInit {
     };
   }
 
-  private createDetailRow(label: string, amount: number) {
+  private createDetailRow(
+    label: string,
+    amount: number | string | Prisma.Decimal | null | undefined,
+  ) {
     return {
       type: 'box',
       layout: 'horizontal',
@@ -888,7 +986,7 @@ export class LineService implements OnModuleInit {
         },
         {
           type: 'text',
-          text: `฿${Number(amount).toLocaleString()}`,
+          text: `฿${Number(amount || 0).toLocaleString()}`,
           size: 'sm',
           color: '#111111',
           align: 'end',
@@ -902,26 +1000,25 @@ export class LineService implements OnModuleInit {
   }
 
   async notifyTenantMaintenanceCompleted(maintenanceId: string) {
-    const maintenance = await this.prisma.maintenanceRequest.findUnique({
-      where: { id: maintenanceId },
-      include: {
-        room: {
-          include: {
-            building: true,
-            contracts: {
-              where: { isActive: true },
-              include: { tenant: true },
-              orderBy: { startDate: 'desc' },
+    const maintenance: MaintenanceWithRoomContracts | null =
+      await this.prisma.maintenanceRequest.findUnique({
+        where: { id: maintenanceId },
+        include: {
+          room: {
+            include: {
+              building: true,
+              contracts: {
+                where: { isActive: true },
+                include: { tenant: true },
+                orderBy: { startDate: 'desc' },
+              },
             },
           },
         },
-      },
-    });
+      });
     if (!maintenance || !maintenance.room) return;
-    const room: any = maintenance.room;
-    const contracts: any[] = Array.isArray(room.contracts)
-      ? room.contracts
-      : [];
+    const room = maintenance.room;
+    const contracts = Array.isArray(room.contracts) ? room.contracts : [];
     const active =
       contracts.find((c) => c.isActive && c.tenant?.lineUserId) || contracts[0];
     const tenant = active?.tenant;
@@ -937,7 +1034,7 @@ export class LineService implements OnModuleInit {
       .split('\n')
       .find((s) => s.trim().length > 0);
 
-    const flex: any = {
+    const flex: Record<string, unknown> = {
       type: 'flex',
       altText: 'งานแจ้งซ่อมเสร็จเรียบร้อยแล้ว',
       contents: {
@@ -1128,7 +1225,13 @@ export class LineService implements OnModuleInit {
     if (!existsSync(uploadsDir)) {
       try {
         mkdirSync(uploadsDir, { recursive: true });
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `ensure room-contacts dir failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     }
     return join(uploadsDir, 'room-contacts.json');
   }
@@ -1139,7 +1242,7 @@ export class LineService implements OnModuleInit {
       if (!existsSync(p)) return {};
       const raw = readFileSync(p, 'utf8');
       if (!raw.trim()) return {};
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== 'object') return {};
       return parsed as Record<string, RoomContact[]>;
     } catch {
@@ -1151,7 +1254,13 @@ export class LineService implements OnModuleInit {
     try {
       const p = this.getRoomContactsFilePath();
       writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
-    } catch {}
+    } catch (e) {
+      this.logger.warn(
+        `write room-contacts failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
 
   private findRoomContactByPhones(variants: string[]) {
@@ -1450,7 +1559,7 @@ export class LineService implements OnModuleInit {
           await this.replyText(event.replyToken, 'ไม่มีห้องค้างชำระในตึกนี้');
           return null;
         }
-        const message: any = {
+        const message: Record<string, unknown> = {
           type: 'flex',
           altText: 'เลือกชั้น',
           contents: {
@@ -1540,7 +1649,7 @@ export class LineService implements OnModuleInit {
           );
           return null;
         }
-        const message: any = {
+        const message: Record<string, unknown> = {
           type: 'flex',
           altText: 'เลือกห้อง',
           contents: {
@@ -1602,7 +1711,7 @@ export class LineService implements OnModuleInit {
             await this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
             return null;
           }
-          const message: any = {
+          const message: Record<string, unknown> = {
             type: 'flex',
             altText: 'เลือกตึก',
             contents: {
@@ -1658,7 +1767,7 @@ export class LineService implements OnModuleInit {
             await this.replyText(event.replyToken, 'ไม่มีห้องค้างชำระในตึกนี้');
             return null;
           }
-          const message: any = {
+          const message: Record<string, unknown> = {
             type: 'flex',
             altText: 'เลือกชั้น',
             contents: {
@@ -1784,7 +1893,7 @@ export class LineService implements OnModuleInit {
           );
           return null;
         }
-        const message: any = {
+        const message: Record<string, unknown> = {
           type: 'flex',
           altText: 'เลือกชั้น (ย้ายออก)',
           contents: {
@@ -1856,7 +1965,7 @@ export class LineService implements OnModuleInit {
           );
           return null;
         }
-        const message: any = {
+        const message: Record<string, unknown> = {
           type: 'flex',
           altText: 'เลือกห้อง (ย้ายออก)',
           contents: {
@@ -2051,10 +2160,6 @@ export class LineService implements OnModuleInit {
         this.tenantMoveoutRequests.delete(userId);
         this.clearTenantMoveoutTimer(userId);
         const reason = text;
-        const room = await this.prisma.room.findUnique({
-          where: { id: pendingMoveout.roomId },
-          include: { building: true },
-        });
         const descParts: string[] = [];
         if (pendingMoveout.moveoutDate)
           descParts.push(`วันที่ย้ายออก: ${pendingMoveout.moveoutDate}`);
@@ -2110,11 +2215,11 @@ export class LineService implements OnModuleInit {
         where: { lineUserId: userId },
       });
       const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
-      let contract: any = null;
+      let contract: ContractWithRoomTenant | null = null;
       if (tenant) {
         contract = await this.prisma.contract.findFirst({
           where: { tenantId: tenant.id, isActive: true },
-          include: { room: { include: { building: true } } },
+          include: { room: { include: { building: true } }, tenant: true },
         });
       } else if (!tenant && contactMatches.length > 0) {
         const roomIds = Array.from(
@@ -2164,7 +2269,7 @@ export class LineService implements OnModuleInit {
         };
         this.tenantMaintenanceState.set(userId, next);
         this.startTenantMaintenanceTimer(userId);
-        const msg: any = {
+        const msg: Record<string, unknown> = {
           type: 'text',
           text: 'ต้องการแนบรูปประกอบการแจ้งซ่อมหรือไม่',
           quickReply: {
@@ -2291,7 +2396,11 @@ export class LineService implements OnModuleInit {
           const p = join(resolve('/app/uploads'), 'dorm-extra.json');
           if (!existsSync(p)) return undefined;
           const raw = readFileSync(p, 'utf8');
-          const parsed = JSON.parse(raw);
+          const parsedUnknown = JSON.parse(raw) as unknown;
+          const parsed =
+            typeof parsedUnknown === 'object' && parsedUnknown !== null
+              ? (parsedUnknown as Record<string, unknown>)
+              : {};
           const u =
             typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
           return u && /^https?:\/\//.test(u) ? u : undefined;
@@ -2687,7 +2796,7 @@ export class LineService implements OnModuleInit {
       if (buildings.length === 0) {
         return this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
       }
-      const message: any = {
+      const message: Record<string, unknown> = {
         type: 'flex',
         altText: 'เลือกตึก',
         contents: {
@@ -2739,11 +2848,11 @@ export class LineService implements OnModuleInit {
         where: { lineUserId: userId },
       });
       const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
-      let contract: any = null;
+      let contract: ContractWithRoomTenant | null = null;
       if (tenant) {
         contract = await this.prisma.contract.findFirst({
           where: { tenantId: tenant.id, isActive: true },
-          include: { room: { include: { building: true } } },
+          include: { room: { include: { building: true } }, tenant: true },
         });
       } else if (!tenant && contactMatches.length > 0) {
         const roomIds = Array.from(
@@ -3613,7 +3722,7 @@ export class LineService implements OnModuleInit {
         return this.replyText(event.replyToken, 'ไม่พบยอดค้างชำระ');
       }
 
-      const carousel = this.buildUnpaidCarousel(invoices, contract.room.number);
+      const carousel = this.buildUnpaidCarousel(invoices);
       return this.replyFlex(event.replyToken, carousel);
     }
 
@@ -3697,7 +3806,7 @@ export class LineService implements OnModuleInit {
       }
 
       const parsed = this.parsePayRentText(text);
-      const contracts: any[] = [];
+      const contracts: ContractWithRoom[] = [];
 
       const tenant = await this.prisma.tenant.findFirst({
         where: { lineUserId: userId },
@@ -3810,7 +3919,7 @@ export class LineService implements OnModuleInit {
           'ไม่พบข้อมูลผู้ใช้ LINE กรุณาลงทะเบียนใหม่',
         );
       }
-      const contracts: any[] = [];
+      const contracts: ContractWithRoomAndInvoices[] = [];
       const tenant = await this.prisma.tenant.findFirst({
         where: { lineUserId: userId },
       });
@@ -3855,7 +3964,7 @@ export class LineService implements OnModuleInit {
           'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนก่อน',
         );
       }
-      const allInvoices: any[] = [];
+      const allInvoices: InvoiceBase[] = [];
       for (const c of contracts) {
         for (const inv of c.invoices || []) {
           allInvoices.push(inv);
@@ -3867,8 +3976,8 @@ export class LineService implements OnModuleInit {
           'ยังไม่มีใบแจ้งหนี้สำหรับห้องของคุณ',
         );
       }
-      const unpaidInvoices = allInvoices.filter((inv) =>
-        [InvoiceStatus.SENT, InvoiceStatus.OVERDUE].includes(inv.status),
+      const unpaidInvoices = allInvoices.filter(
+        (inv) => inv.status === 'SENT' || inv.status === 'OVERDUE',
       );
       if (unpaidInvoices.length === 0) {
         return this.replyText(
@@ -3876,7 +3985,7 @@ export class LineService implements OnModuleInit {
           'ไม่พบยอดค้างชำระสำหรับห้องของคุณ',
         );
       }
-      const carousel = this.buildUnpaidCarousel(unpaidInvoices, '');
+      const carousel = this.buildUnpaidCarousel(unpaidInvoices);
       await this.replyFlex(event.replyToken, carousel);
       return null;
     }
@@ -3884,7 +3993,7 @@ export class LineService implements OnModuleInit {
     if (text === 'ส่งสลิป') {
       if (this.isStaffUser(userId)) {
         const state = this.staffPaymentState.get(userId || '');
-        let invoice: any = null;
+        let invoice: Prisma.InvoiceGetPayload<{}> | null = null;
         if (state?.contractId) {
           invoice =
             (await this.prisma.invoice.findFirst({
@@ -3956,7 +4065,6 @@ export class LineService implements OnModuleInit {
         const txt = bankAccountRaw;
         const nameIdx = txt.indexOf('ชื่อบัญชี');
         const accIdx = txt.indexOf('เลขที่บัญชี');
-        const branchIdx = txt.indexOf('สาขา');
 
         if (nameIdx !== -1 || accIdx !== -1) {
           const beforeName =
@@ -4127,7 +4235,7 @@ export class LineService implements OnModuleInit {
         },
       ];
 
-      const bubble: any = {
+      const bubble: Record<string, unknown> = {
         type: 'bubble',
         body: {
           type: 'box',
@@ -4154,7 +4262,7 @@ export class LineService implements OnModuleInit {
         },
       };
 
-      const message: any = {
+      const message: Record<string, unknown> = {
         type: 'flex',
         altText: 'เลขบัญชีหอพัก',
         contents: bubble,
@@ -4194,7 +4302,7 @@ export class LineService implements OnModuleInit {
         (base
           ? `${String(base).replace(/\/+$/, '')}/api/media/logo.png`
           : undefined);
-      const bodyContents: any[] = [
+      const bodyContents: Array<Record<string, unknown>> = [
         {
           type: 'text',
           text: name,
@@ -4212,7 +4320,7 @@ export class LineService implements OnModuleInit {
           wrap: true,
         });
       }
-      const footerButtons: any[] = [];
+      const footerButtons: Array<Record<string, unknown>> = [];
       if (telUri) {
         footerButtons.push({
           type: 'button',
@@ -4235,7 +4343,10 @@ export class LineService implements OnModuleInit {
           },
         });
       }
-      const bubble: any = {
+      const bubble: Record<string, unknown> & {
+        hero?: Record<string, unknown>;
+        footer?: Record<string, unknown>;
+      } = {
         type: 'bubble',
         body: {
           type: 'box',
@@ -4261,7 +4372,7 @@ export class LineService implements OnModuleInit {
           contents: footerButtons,
         };
       }
-      const flex: any = {
+      const flex: Record<string, unknown> = {
         type: 'flex',
         altText: 'ข้อมูลการติดต่อหอพัก',
         contents: bubble,
@@ -4306,7 +4417,13 @@ export class LineService implements OnModuleInit {
         if (img.getWidth() > maxW) img.resize(maxW, Jimp.AUTO);
         img.quality(80);
         await img.writeAsync(filepath);
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `Failed to optimize image: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
       const baseUrl =
         process.env.PUBLIC_API_URL ||
         process.env.INTERNAL_API_URL ||
@@ -4475,7 +4592,13 @@ export class LineService implements OnModuleInit {
         if (img.getWidth() > maxW) img.resize(maxW, Jimp.AUTO);
         img.quality(80);
         await img.writeAsync(filepath);
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `Failed to optimize move-out image: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
       const baseUrl =
         process.env.PUBLIC_API_URL ||
         process.env.INTERNAL_API_URL ||
@@ -4556,21 +4679,33 @@ export class LineService implements OnModuleInit {
     return names[Math.max(0, Math.min(11, (m || 1) - 1))];
   }
 
-  private async replyFlex(replyToken: string, message: any) {
+  private async replyFlex(
+    replyToken: string,
+    message: Record<string, unknown>,
+  ) {
     if (!this.client) return;
     try {
-      this.logger.log(`replyFlex: altText=${message?.altText ?? 'n/a'}`);
-    } catch {}
+      const altText =
+        typeof message.altText === 'string' ? message.altText : 'n/a';
+      this.logger.log(`replyFlex: altText=${altText}`);
+    } catch (e) {
+      this.logger.warn(
+        `replyFlex log failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     return this.client.replyMessage({
       replyToken,
-      messages: [message] as any,
+      messages: [message as unknown as messagingApi.Message],
     });
   }
-  private async replyFlexMany(replyToken: string, messages: any[]) {
+  private async replyFlexMany(
+    replyToken: string,
+    messages: Array<Record<string, unknown>>,
+  ) {
     if (!this.client) return;
     return this.client.replyMessage({
       replyToken,
-      messages: messages as any,
+      messages: messages as unknown as messagingApi.Message[],
     });
   }
 
@@ -4625,7 +4760,7 @@ export class LineService implements OnModuleInit {
     return null;
   }
 
-  private buildUnpaidCarousel(invoices: any[], roomNumber: string) {
+  private buildUnpaidCarousel(invoices: InvoiceBase[]) {
     const bubbles = invoices.map((inv) => {
       const monthLabel = `${this.thaiMonth(inv.month)} ${inv.year}`;
       const total = Number(inv.totalAmount).toLocaleString('en-US', {
@@ -4780,7 +4915,7 @@ export class LineService implements OnModuleInit {
     };
   }
 
-  private buildUnpaidCarouselForStaff(invoices: any[]) {
+  private buildUnpaidCarouselForStaff(invoices: InvoiceWithContract[]) {
     const bubbles = invoices.map((inv) => {
       const monthLabel = `${this.thaiMonth(inv.month)} ${inv.year}`;
       const total = Number(inv.totalAmount).toLocaleString('en-US', {
@@ -5123,7 +5258,7 @@ export class LineService implements OnModuleInit {
     };
   }
 
-  private buildMaintenanceCarouselForStaff(items: any[]) {
+  private buildMaintenanceCarouselForStaff(items: MaintenanceWithRoom[]) {
     const bubbles = items.map((it) => {
       const id = it.id;
       const buildingLabel =
@@ -5136,7 +5271,9 @@ export class LineService implements OnModuleInit {
         timeZone: 'Asia/Bangkok',
       });
       const img =
-        this.extractImageUrl(it.description) ||
+        this.extractImageUrl(
+          typeof it.description === 'string' ? it.description : undefined,
+        ) ||
         'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
       return {
         type: 'bubble',
@@ -5259,7 +5396,9 @@ export class LineService implements OnModuleInit {
       );
     }
 
-    let contract: any = null;
+    let contract: Prisma.ContractGetPayload<{
+      include: { room: true };
+    }> | null = null;
     if (tenant) {
       contract = await this.prisma.contract.findFirst({
         where: { tenantId: tenant.id, isActive: true },
@@ -5277,7 +5416,9 @@ export class LineService implements OnModuleInit {
       });
     }
 
-    let invoice: any = null;
+    let invoice: Prisma.InvoiceGetPayload<{
+      include: { payments: true; contract: { include: { room: true } } };
+    }> | null = null;
 
     if (ctxInvoiceId) {
       invoice = await this.prisma.invoice.findUnique({
@@ -5408,7 +5549,13 @@ export class LineService implements OnModuleInit {
             'https://line-sisom.washqueue.com';
           slipUrlTmp = this.mediaService.buildUrlFromBase(baseUrl, filenameTmp);
         }
-      } catch {}
+      } catch (e) {
+        this.logger.warn(
+          `LINE slip preload failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
       let slipAmount: number | undefined = undefined;
       if (slipUrlTmp) {
         const v1 = await this.slipOk.verifyByUrl(slipUrlTmp);
@@ -5420,7 +5567,7 @@ export class LineService implements OnModuleInit {
       }
       if (typeof slipAmount === 'number' && isStaff) {
         const state = this.staffPaymentState.get(userId || '');
-        const whereBase: any = {
+        const whereBase: Prisma.InvoiceWhereInput = {
           status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
         };
         if (state?.contractId) {
@@ -5537,6 +5684,8 @@ export class LineService implements OnModuleInit {
       : await this.slipOk.verifyByData(filepath, Number(invoice.totalAmount));
     const slipMeta = {
       amount: verify.amount ?? Number(invoice.totalAmount),
+      sourceBank: verify.sourceBank,
+      sourceAccount: verify.sourceAccount,
       destBank: verify.destBank,
       destAccount: verify.destAccount,
       transactedAt: verify.transactedAt,
@@ -5546,7 +5695,7 @@ export class LineService implements OnModuleInit {
     };
 
     const paymentAmount = verify.amount ?? Number(invoice.totalAmount);
-    const payment = await this.prisma.payment.create({
+    await this.prisma.payment.create({
       data: {
         invoiceId: invoice.id,
         amount: paymentAmount,
@@ -5564,7 +5713,7 @@ export class LineService implements OnModuleInit {
 
     // Calculate total paid including this new payment
     const previousPaid = (invoice.payments || []).reduce(
-      (sum: number, p: any) => sum + Number(p.amount),
+      (sum, p) => sum + Number(p.amount),
       0,
     );
     const totalPaid = previousPaid + Number(paymentAmount);
@@ -5596,6 +5745,10 @@ export class LineService implements OnModuleInit {
               })
             : '—';
           const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
+          const origin =
+            [verify.sourceBank, verify.sourceAccount]
+              .filter(Boolean)
+              .join(' / ') || '—';
           const dest =
             [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
             '—';
@@ -5605,6 +5758,7 @@ export class LineService implements OnModuleInit {
           const flex = this.buildSlipFlex('SUCCESS', {
             amount: amt,
             room: roomNum,
+            origin,
             dest,
             when,
             period,
@@ -5634,6 +5788,13 @@ export class LineService implements OnModuleInit {
           invoice.contract?.room?.number || contract?.room?.number || '-';
         const flex = this.buildSlipFlex('DUPLICATE', {
           room: roomNum,
+          origin:
+            [verify.sourceBank, verify.sourceAccount]
+              .filter(Boolean)
+              .join(' / ') || '—',
+          dest:
+            [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
+            '—',
           when,
           period,
         });
@@ -5846,8 +6007,6 @@ export class LineService implements OnModuleInit {
     if (!this.client) {
       return { ok: false, error: 'Line client not initialized' };
     }
-    const { existsSync, copyFileSync, readFileSync } = await import('fs');
-    const { join, extname } = await import('path');
     const uploadCandidate = join(
       '/app/uploads',
       'richmenu-a-1771048926187.png',
@@ -5869,7 +6028,7 @@ export class LineService implements OnModuleInit {
     if (!existsSync(localPath)) {
       return { ok: false, error: `File not found: ${localPath}` };
     }
-    const payload = {
+    const payload: messagingApi.RichMenuRequest = {
       size: { width: 2500, height: 1686 },
       selected: true,
       name: 'defualt',
@@ -5895,13 +6054,9 @@ export class LineService implements OnModuleInit {
           action: { type: 'message', text: 'REGISTERSISOM' },
         },
       ],
-    } as any;
+    };
     const createRes = await this.client.createRichMenu(payload);
-    const richMenuId =
-      (createRes as any)?.richMenuId ||
-      (createRes as unknown as { richMenuId: string }).richMenuId;
-    const buf = readFileSync(localPath);
-    // Skip uploading richmenu image to avoid upstream size limit issues
+    const richMenuId = createRes.richMenuId;
     const ext = extname(localPath).toLowerCase();
     const uploadsName = `richmenu-a-${Date.now()}${ext}`;
     const uploadsPath = join(this.mediaService.getUploadDir(), uploadsName);
@@ -5918,7 +6073,13 @@ export class LineService implements OnModuleInit {
         'richmenu-general.json',
       );
       writeFileSync(metaPath, JSON.stringify({ richMenuId }, null, 2), 'utf8');
-    } catch {}
+    } catch (e) {
+      this.logger.warn(
+        `write richmenu-general.json failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
     await this.setDefaultRichMenu(richMenuId);
     return { ok: true, richMenuId, imageUrl };
   }
@@ -5927,8 +6088,6 @@ export class LineService implements OnModuleInit {
     if (!this.client) {
       return { ok: false, error: 'Line client not initialized' };
     }
-    const { existsSync, copyFileSync, readFileSync } = await import('fs');
-    const { join, extname } = await import('path');
     let localPath = join(this.projectRoot, 'richmenu', 'b.png');
     if (!existsSync(localPath)) {
       localPath = join(this.projectRoot, 'richmenu', 'b.jpg');
@@ -5943,7 +6102,7 @@ export class LineService implements OnModuleInit {
     if (!existsSync(localPath)) {
       return { ok: false, error: `File not found: ${localPath}` };
     }
-    const payload = {
+    const payload: messagingApi.RichMenuRequest = {
       size: { width: 2500, height: 1686 },
       selected: true,
       name: 'b',
@@ -5977,17 +6136,15 @@ export class LineService implements OnModuleInit {
           action: { type: 'message', text: 'เบอร์ติดต่อ 092 426 9477' },
         },
       ],
-    } as any;
+    };
     const createRes = await this.client.createRichMenu(payload);
-    const richMenuId =
-      (createRes as any)?.richMenuId ||
-      (createRes as unknown as { richMenuId: string }).richMenuId;
+    const richMenuId = createRes.richMenuId;
     const buf = readFileSync(localPath);
     if (this.blobClient) {
       const ext = extname(localPath).toLowerCase();
       const mimeType =
         ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-      const blob: any = new Blob([buf], { type: mimeType });
+      const blob = new Blob([buf], { type: mimeType });
       await this.blobClient.setRichMenuImage(richMenuId, blob);
     }
     const ext = extname(localPath).toLowerCase();
@@ -6007,8 +6164,6 @@ export class LineService implements OnModuleInit {
     if (!this.client) {
       return { ok: false, error: 'Line client not initialized' };
     }
-    const { existsSync, copyFileSync, readFileSync } = await import('fs');
-    const { join, extname } = await import('path');
     let localPath = join(this.projectRoot, 'richmenu', 'c.png');
     if (!existsSync(localPath)) {
       localPath = join(this.projectRoot, 'richmenu', 'c.jpg');
@@ -6027,7 +6182,7 @@ export class LineService implements OnModuleInit {
     const meterUrl = this.liffId
       ? `https://liff.line.me/${this.liffId}?path=${encodeURIComponent(meterPath)}`
       : 'https://line-sisom.washqueue.com/meter';
-    const payload = {
+    const payload: messagingApi.RichMenuRequest = {
       size: { width: 2500, height: 1686 },
       selected: true,
       name: 'c',
@@ -6054,17 +6209,15 @@ export class LineService implements OnModuleInit {
           action: { type: 'message', text: 'แจ้งย้าย' },
         },
       ],
-    } as any;
+    };
     const createRes = await this.client.createRichMenu(payload);
-    const richMenuId =
-      (createRes as any)?.richMenuId ||
-      (createRes as unknown as { richMenuId: string }).richMenuId;
+    const richMenuId = createRes.richMenuId;
     const buf = readFileSync(localPath);
     if (this.blobClient) {
       const ext = extname(localPath).toLowerCase();
       const mimeType =
         ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
-      const blob: any = new Blob([buf], { type: mimeType });
+      const blob = new Blob([buf], { type: mimeType });
       await this.blobClient.setRichMenuImage(richMenuId, blob);
     }
     const ext = extname(localPath).toLowerCase();
@@ -6147,7 +6300,7 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  async apiMapLineUserRole(body: {
+  apiMapLineUserRole(body: {
     userId: string;
     role: 'STAFF' | 'ADMIN' | 'OWNER';
   }) {
@@ -6221,6 +6374,7 @@ export class LineService implements OnModuleInit {
     data: {
       amount?: string;
       room: string;
+      origin?: string;
       dest?: string;
       when: string;
       period?: string;
@@ -6281,6 +6435,15 @@ export class LineService implements OnModuleInit {
       color: '#666666',
       wrap: true,
     });
+    if (data.origin) {
+      rows.push({
+        type: 'text',
+        text: `ต้นทาง: ${data.origin}`,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+      });
+    }
     if (data.dest) {
       rows.push({
         type: 'text',
@@ -6353,7 +6516,11 @@ export class LineService implements OnModuleInit {
       const p = join(uploadsDir, 'dorm-extra.json');
       if (!existsSync(p)) return undefined;
       const raw = readFileSync(p, 'utf8');
-      const parsed = JSON.parse(raw);
+      const parsedUnknown = JSON.parse(raw) as unknown;
+      const parsed =
+        typeof parsedUnknown === 'object' && parsedUnknown !== null
+          ? (parsedUnknown as Record<string, unknown>)
+          : {};
       const url =
         typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined;
       if (url && /^https?:\/\//.test(url)) return url;

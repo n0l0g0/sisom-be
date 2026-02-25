@@ -1086,11 +1086,7 @@ export class InvoicesService implements OnModuleInit {
     const minute = get('minute');
     const now = new Date();
     // Match schedule
-    const dormExtra = this.settingsService.getDormExtra();
-    const effectiveDay = Number.isFinite(Number(dormExtra?.monthlyDueDay))
-      ? Math.max(1, Math.min(28, Number(dormExtra.monthlyDueDay)))
-      : cfg.dayOfMonth;
-    if (day !== effectiveDay) return { ok: false, reason: 'day_mismatch' };
+    if (day !== cfg.dayOfMonth) return { ok: false, reason: 'day_mismatch' };
     if (hour !== cfg.hour) return { ok: false, reason: 'hour_mismatch' };
     if (minute !== (cfg.minute ?? 0))
       return { ok: false, reason: 'minute_mismatch' };
@@ -1104,6 +1100,18 @@ export class InvoicesService implements OnModuleInit {
         }
       }
     } catch {}
+    appendLog({
+      action: 'AUTO_SEND_START',
+      entityType: 'Invoice',
+      details: {
+        month,
+        year,
+        day,
+        hour,
+        minute,
+        timezone: tz,
+      },
+    });
     // Send all invoices for current month/year with status DRAFT
     const invoices = await this.prisma.invoice.findMany({
       where: { month, year, status: InvoiceStatus.DRAFT },
@@ -1142,6 +1150,16 @@ export class InvoicesService implements OnModuleInit {
     await this.prisma.invoice.updateMany({
       where: { month, year, status: InvoiceStatus.DRAFT },
       data: { status: InvoiceStatus.SENT },
+    });
+    appendLog({
+      action: 'AUTO_SEND_DONE',
+      entityType: 'Invoice',
+      details: {
+        month,
+        year,
+        count: invoices.length,
+        invoiceIds: invoices.map((inv) => inv.id),
+      },
     });
     // Update lastRunAt
     const p = this.getAutoSendFilePath();

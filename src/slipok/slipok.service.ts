@@ -7,6 +7,8 @@ type SlipOkResult = {
   raw?: unknown;
   message?: string;
   amount?: number;
+  sourceBank?: string;
+  sourceAccount?: string;
   destBank?: string;
   destAccount?: string;
   transactedAt?: string;
@@ -96,6 +98,24 @@ export class SlipOkService {
         'price',
       ]);
       const amountVal = amountRaw ? amountRaw : undefined;
+      const sourceBank = pickString(data, [
+        'sourceBank',
+        'senderBank',
+        'fromBank',
+        'originBank',
+        'payerBank',
+        'srcBank',
+        'bank_from',
+      ]);
+      const sourceAccount = pickString(data, [
+        'sourceAccount',
+        'senderAccount',
+        'fromAccount',
+        'originAccount',
+        'payerAccount',
+        'srcAccount',
+        'accountFrom',
+      ]);
       const destBank = pickString(data, [
         'destinationBank',
         'receiverBank',
@@ -125,6 +145,8 @@ export class SlipOkService {
         raw: data,
         message: String(text),
         amount: amountVal,
+        sourceBank,
+        sourceAccount,
         destBank,
         destAccount,
         transactedAt,
@@ -178,6 +200,24 @@ export class SlipOkService {
         'price',
       ]);
       const amountVal = amountRaw ? amountRaw : undefined;
+      const sourceBank = pickString(data, [
+        'sourceBank',
+        'senderBank',
+        'fromBank',
+        'originBank',
+        'payerBank',
+        'srcBank',
+        'bank_from',
+      ]);
+      const sourceAccount = pickString(data, [
+        'sourceAccount',
+        'senderAccount',
+        'fromAccount',
+        'originAccount',
+        'payerAccount',
+        'srcAccount',
+        'accountFrom',
+      ]);
       const destBank = pickString(data, [
         'destinationBank',
         'receiverBank',
@@ -207,6 +247,8 @@ export class SlipOkService {
         raw: data,
         message: String(text),
         amount: amountVal,
+        sourceBank,
+        sourceAccount,
         destBank,
         destAccount,
         transactedAt,

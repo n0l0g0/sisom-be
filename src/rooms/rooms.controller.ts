@@ -56,29 +56,26 @@ export class RoomsController {
   }
 
   @Post(':id/contacts/:contactId/clear-line')
-  async clearContactLine(
+  clearContactLine(
     @Param('id') id: string,
     @Param('contactId') contactId: string,
   ) {
-    const contacts = await this.roomsService.clearRoomContactLine(
-      id,
-      contactId,
-    );
+    const contacts = this.roomsService.clearRoomContactLine(id, contactId);
     return { contacts };
   }
 
   @Delete(':id/contacts/:contactId')
-  async deleteContact(
+  deleteContact(
     @Param('id') id: string,
     @Param('contactId') contactId: string,
   ) {
-    const contacts = await this.roomsService.deleteRoomContact(id, contactId);
+    const contacts = this.roomsService.deleteRoomContact(id, contactId);
     return { contacts };
   }
 
   @Get(':id/payment-schedule')
-  async getPaymentSchedule(@Param('id') id: string) {
-    const schedule = await this.roomsService.getRoomPaymentSchedule(id);
+  getPaymentSchedule(@Param('id') id: string) {
+    const schedule = this.roomsService.getRoomPaymentSchedule(id);
     return { schedule };
   }
 
@@ -92,8 +89,8 @@ export class RoomsController {
   }
 
   @Get('payment-schedules')
-  async listPaymentSchedules() {
-    const schedules = await this.roomsService.listRoomPaymentSchedules();
+  listPaymentSchedules() {
+    const schedules = this.roomsService.listRoomPaymentSchedules();
     return { schedules };
   }
 }

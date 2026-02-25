@@ -15,8 +15,9 @@ async function main() {
     try {
       await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
       console.log(`Truncated ${table}`);
-    } catch (error) {
-      console.log({ error });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log({ error: message });
     }
   }
 }

@@ -119,7 +119,9 @@ export class MediaController {
       files = readdirSync(dir)
         .filter((f) => /\.(png|jpg|jpeg|gif|webp)$/i.test(f))
         .sort();
-    } catch {}
+    } catch {
+      files = [];
+    }
     const items = files.map((filename) => ({
       filename,
       url: `/api/media/room/${filename}`,

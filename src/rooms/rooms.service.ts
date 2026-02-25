@@ -17,92 +17,97 @@ import {
   softDeleteRecord,
 } from '../activity/logger';
 
+type RoomContact = {
+  id: string;
+  name: string;
+  phone: string;
+  lineUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type RoomContactsStore = Record<string, RoomContact[]>;
+
+type RoomPaymentSchedule = {
+  monthlyDay?: number;
+  oneTimeDate?: string;
+  updatedAt?: string;
+};
+
+type RoomSchedulesStore = Record<string, RoomPaymentSchedule>;
+
 @Injectable()
 export class RoomsService {
   constructor(private prisma: PrismaService) {}
 
-  private getContactsFilePath() {
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private ensureUploadsDir() {
     const uploadsDir = path.resolve('/app/uploads');
     if (!fs.existsSync(uploadsDir)) {
       try {
         fs.mkdirSync(uploadsDir, { recursive: true });
-      } catch {}
+      } catch {
+        return uploadsDir;
+      }
     }
-    return path.join(uploadsDir, 'room-contacts.json');
+    return uploadsDir;
+  }
+
+  private getContactsFilePath() {
+    return path.join(this.ensureUploadsDir(), 'room-contacts.json');
   }
 
   private getSchedulesFilePath() {
-    const uploadsDir = path.resolve('/app/uploads');
-    if (!fs.existsSync(uploadsDir)) {
-      try {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      } catch {}
-    }
-    return path.join(uploadsDir, 'room-payment-schedule.json');
+    return path.join(this.ensureUploadsDir(), 'room-payment-schedule.json');
   }
 
-  private readContactsStore(): Record<
-    string,
-    Array<{ id: string; name: string; phone: string; lineUserId?: string }>
-  > | null {
+  private readContactsStore(): RoomContactsStore | null {
     try {
       const p = this.getContactsFilePath();
       if (!fs.existsSync(p)) return {};
       const raw = fs.readFileSync(p, 'utf8');
       if (!raw.trim()) return {};
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return {};
-      return parsed as Record<
-        string,
-        Array<{ id: string; name: string; phone: string; lineUserId?: string }>
-      >;
+      const parsedUnknown = JSON.parse(raw) as unknown;
+      if (!this.isRecord(parsedUnknown)) return {};
+      return parsedUnknown as RoomContactsStore;
     } catch {
       return {};
     }
   }
 
-  private writeContactsStore(
-    store: Record<
-      string,
-      Array<{ id: string; name: string; phone: string; lineUserId?: string }>
-    >,
-  ) {
+  private writeContactsStore(store: RoomContactsStore) {
     try {
       const p = this.getContactsFilePath();
       fs.writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
-    } catch {}
+    } catch {
+      return;
+    }
   }
 
-  private readSchedulesStore(): Record<
-    string,
-    { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
-  > {
+  private readSchedulesStore(): RoomSchedulesStore {
     try {
       const p = this.getSchedulesFilePath();
       if (!fs.existsSync(p)) return {};
       const raw = fs.readFileSync(p, 'utf8');
       if (!raw.trim()) return {};
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return {};
-      return parsed as Record<
-        string,
-        { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
-      >;
+      const parsedUnknown = JSON.parse(raw) as unknown;
+      if (!this.isRecord(parsedUnknown)) return {};
+      return parsedUnknown as RoomSchedulesStore;
     } catch {
       return {};
     }
   }
 
-  private writeSchedulesStore(
-    store: Record<
-      string,
-      { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
-    >,
-  ) {
+  private writeSchedulesStore(store: RoomSchedulesStore) {
     try {
       const p = this.getSchedulesFilePath();
       fs.writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
-    } catch {}
+    } catch {
+      return;
+    }
   }
 
   async getRoomContacts(roomId: string) {
@@ -122,14 +127,14 @@ export class RoomsService {
     }
 
     const now = new Date().toISOString();
-    const contact = {
+    const contact: RoomContact = {
       id: randomUUID(),
       name: tenant.name || tenant.phone,
       phone: tenant.phone,
       lineUserId: tenant.lineUserId || undefined,
       createdAt: now,
       updatedAt: now,
-    } as any;
+    };
     const next = [contact];
     store[roomId] = next;
     this.writeContactsStore(store);
@@ -158,7 +163,7 @@ export class RoomsService {
       throw new ConflictException('phone already exists for this room');
     }
     const now = new Date().toISOString();
-    const next = [
+    const next: RoomContact[] = [
       ...current,
       {
         id: randomUUID(),
@@ -167,14 +172,14 @@ export class RoomsService {
         lineUserId: undefined,
         createdAt: now,
         updatedAt: now,
-      } as any,
+      },
     ];
     store[roomId] = next;
     this.writeContactsStore(store);
     return next;
   }
 
-  async clearRoomContactLine(roomId: string, contactId: string) {
+  clearRoomContactLine(roomId: string, contactId: string) {
     const store = this.readContactsStore() || {};
     const current = store[roomId] || [];
     const next = current.map((c) =>
@@ -187,7 +192,7 @@ export class RoomsService {
     return next;
   }
 
-  async deleteRoomContact(roomId: string, contactId: string) {
+  deleteRoomContact(roomId: string, contactId: string) {
     const store = this.readContactsStore() || {};
     const current = store[roomId] || [];
     const next = current.filter((c) => c.id !== contactId);
@@ -365,7 +370,7 @@ export class RoomsService {
     return { ok: true };
   }
 
-  async getRoomPaymentSchedule(roomId: string) {
+  getRoomPaymentSchedule(roomId: string) {
     const store = this.readSchedulesStore() || {};
     const s = store[roomId] || null;
     return s;
@@ -407,7 +412,7 @@ export class RoomsService {
     return store[roomId];
   }
 
-  async listRoomPaymentSchedules() {
+  listRoomPaymentSchedules() {
     return this.readSchedulesStore() || {};
   }
 }
