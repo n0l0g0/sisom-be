@@ -116,23 +116,31 @@ export class PaymentsService {
           ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
           : undefined;
       if (tenant && tenant.lineUserId && room) {
-        await this.lineService.pushSuccessFlex(
-          tenant.lineUserId,
-          room,
-          Number(payment.amount),
-          paidAt,
-          undefined,
-          period,
-        );
+        try {
+          await this.lineService.pushSuccessFlex(
+            tenant.lineUserId,
+            room,
+            Number(payment.amount),
+            paidAt,
+            undefined,
+            period,
+          );
+        } catch {
+          // Swallow LINE push errors to avoid breaking payment flow
+        }
       }
       if (room) {
-        await this.lineService.notifyStaffPaymentSuccess({
-          room,
-          amount: Number(payment.amount),
-          period,
-          paidAt,
-          tenantName: tenant?.name || undefined,
-        });
+        try {
+          await this.lineService.notifyStaffPaymentSuccess({
+            room,
+            amount: Number(payment.amount),
+            period,
+            paidAt,
+            tenantName: tenant?.name || undefined,
+          });
+        } catch {
+          // Ignore LINE notify errors
+        }
       }
     }
     if (updatePaymentDto.status === PaymentStatus.REJECTED) {
@@ -142,13 +150,17 @@ export class PaymentsService {
         ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
         : undefined;
       if (tenant && tenant.lineUserId && room) {
-        await this.lineService.pushRejectFlex(
-          tenant.lineUserId,
-          room,
-          new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),
-          'สลิปของคุณไม่ผ่านการตรวจสอบ กรุณาติดต่อผู้ดูแล',
-          period,
-        );
+        try {
+          await this.lineService.pushRejectFlex(
+            tenant.lineUserId,
+            room,
+            new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),
+            'สลิปของคุณไม่ผ่านการตรวจสอบ กรุณาติดต่อผู้ดูแล',
+            period,
+          );
+        } catch {
+          // Ignore LINE push errors
+        }
       }
     }
 
