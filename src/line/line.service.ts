@@ -3735,11 +3735,7 @@ export class LineService implements OnModuleInit {
         );
       }
       const invoices = await this.prisma.invoice.findMany({
-        where: {
-          status: {
-            in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] as InvoiceStatus[],
-          },
-        },
+        where: { status: InvoiceStatus.OVERDUE },
         include: {
           contract: {
             include: { room: { include: { building: true } }, tenant: true },
