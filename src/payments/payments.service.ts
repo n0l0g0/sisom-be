@@ -125,8 +125,13 @@ export class PaymentsService {
             undefined,
             period,
           );
-        } catch {
-          // Swallow LINE push errors to avoid breaking payment flow
+        } catch (e) {
+          const msg = 'ตัดยอดเรียบร้อยแล้วครับ';
+          try {
+            await this.lineService.pushMessage(tenant.lineUserId, msg);
+          } catch {
+            // ignore
+          }
         }
       }
       if (room) {
@@ -150,16 +155,22 @@ export class PaymentsService {
         ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
         : undefined;
       if (tenant && tenant.lineUserId && room) {
+        const reason =
+          'สลิปของคุณไม่ผ่านการตรวจสอบ กรุณาติดต่อผู้ดูแล';
         try {
           await this.lineService.pushRejectFlex(
             tenant.lineUserId,
             room,
             new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }),
-            'สลิปของคุณไม่ผ่านการตรวจสอบ กรุณาติดต่อผู้ดูแล',
+            reason,
             period,
           );
-        } catch {
-          // Ignore LINE push errors
+        } catch (e) {
+          try {
+            await this.lineService.pushMessage(tenant.lineUserId, reason);
+          } catch {
+            // ignore
+          }
         }
       }
     }
