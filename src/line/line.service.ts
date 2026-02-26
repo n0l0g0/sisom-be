@@ -5795,10 +5795,15 @@ export class LineService implements OnModuleInit {
           period,
         });
         setTimeout(() => {
-          this.pushFlex(userId, flex).catch((e) => {
+          this.pushFlex(userId, flex).catch(async (e) => {
             this.logger.warn(
               `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
             );
+            const msg =
+              'ระบบตรวจพบว่าคุณได้แจ้งชำระไว้แล้ว กรุณารอทีมงานตรวจสอบและยืนยันผล ขอบคุณค่ะ/ครับ';
+            try {
+              await this.pushMessage(userId, msg);
+            } catch {}
           });
         }, delayMs);
       } catch (e) {
