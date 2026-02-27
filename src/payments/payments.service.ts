@@ -81,9 +81,14 @@ export class PaymentsService {
   }
 
   async update(id: string, updatePaymentDto: UpdatePaymentDto) {
+    const data: any = { ...updatePaymentDto };
+    if (data.paidAt && typeof data.paidAt === 'string') {
+      data.paidAt = new Date(data.paidAt);
+    }
+
     const payment = await this.prisma.payment.update({
       where: { id },
-      data: updatePaymentDto,
+      data,
       include: {
         invoice: {
           include: {
