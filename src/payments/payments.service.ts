@@ -56,7 +56,11 @@ export class PaymentsService {
           include: {
             contract: {
               include: {
-                room: true,
+                room: {
+                  include: {
+                    building: true,
+                  },
+                },
                 tenant: true,
               },
             },
@@ -86,7 +90,11 @@ export class PaymentsService {
             contract: {
               include: {
                 tenant: true,
-                room: true,
+                room: {
+                  include: {
+                    building: true,
+                  },
+                },
               },
             },
           },

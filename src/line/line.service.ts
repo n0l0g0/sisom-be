@@ -5393,12 +5393,12 @@ export class LineService implements OnModuleInit {
     }
 
     let contract: Prisma.ContractGetPayload<{
-      include: { room: true };
+      include: { room: { include: { building: true } } };
     }> | null = null;
     if (tenant) {
       contract = await this.prisma.contract.findFirst({
         where: { tenantId: tenant.id, isActive: true },
-        include: { room: true },
+        include: { room: { include: { building: true } } },
       });
       if (!contract) {
         return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
@@ -5407,19 +5407,19 @@ export class LineService implements OnModuleInit {
       const roomIds = Array.from(new Set(contactMatches.map((m) => m.roomId)));
       contract = await this.prisma.contract.findFirst({
         where: { roomId: { in: roomIds }, isActive: true },
-        include: { room: true },
+        include: { room: { include: { building: true } } },
         orderBy: { startDate: 'desc' },
       });
     }
 
     let invoice: Prisma.InvoiceGetPayload<{
-      include: { payments: true; contract: { include: { room: true } } };
+      include: { payments: true; contract: { include: { room: { include: { building: true } } } } };
     }> | null = null;
 
     if (ctxInvoiceId) {
       invoice = await this.prisma.invoice.findUnique({
         where: { id: ctxInvoiceId },
-        include: { payments: true, contract: { include: { room: true } } },
+        include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
       });
       if (
         invoice &&
@@ -5445,7 +5445,7 @@ export class LineService implements OnModuleInit {
             },
           },
           orderBy: { createdAt: 'desc' },
-          include: { payments: true, contract: { include: { room: true } } },
+          include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
         });
       } else if (isStaff) {
         const state = this.staffPaymentState.get(userId || '');
@@ -5459,7 +5459,7 @@ export class LineService implements OnModuleInit {
               },
             },
             orderBy: { createdAt: 'desc' },
-            include: { payments: true, contract: { include: { room: true } } },
+            include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
           });
           // Fallback: any latest invoice for contract
           if (!invoice) {
@@ -5468,14 +5468,14 @@ export class LineService implements OnModuleInit {
               orderBy: { createdAt: 'desc' },
               include: {
                 payments: true,
-                contract: { include: { room: true } },
+                contract: { include: { room: { include: { building: true } } } },
               },
             });
           }
         } else if (state?.roomId) {
           const contract2 = await this.prisma.contract.findFirst({
             where: { roomId: state.roomId, isActive: true },
-            include: { room: true },
+            include: { room: { include: { building: true } } },
           });
           if (contract2) {
             // Try unpaid first
@@ -5487,7 +5487,7 @@ export class LineService implements OnModuleInit {
               orderBy: { createdAt: 'desc' },
               include: {
                 payments: true,
-                contract: { include: { room: true } },
+                contract: { include: { room: { include: { building: true } } } },
               },
             });
             // Fallback: any latest invoice
@@ -5497,7 +5497,7 @@ export class LineService implements OnModuleInit {
                 orderBy: { createdAt: 'desc' },
                 include: {
                   payments: true,
-                  contract: { include: { room: true } },
+                  contract: { include: { room: { include: { building: true } } } },
                 },
               });
             }
@@ -5510,7 +5510,7 @@ export class LineService implements OnModuleInit {
               status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
             },
             orderBy: { createdAt: 'desc' },
-            include: { payments: true, contract: { include: { room: true } } },
+            include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
           });
           if (!invoice) {
             return this.replyText(
@@ -5581,7 +5581,7 @@ export class LineService implements OnModuleInit {
             totalAmount: { gte: slipAmount - 1, lte: slipAmount + 1 },
           },
           orderBy: { createdAt: 'desc' },
-          include: { payments: true, contract: { include: { room: true } } },
+          include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
         });
         const pick = candidates[0];
         if (pick) {
@@ -5594,7 +5594,7 @@ export class LineService implements OnModuleInit {
         if (isStaff) {
           invoice = await this.prisma.invoice.findFirst({
             orderBy: { createdAt: 'desc' },
-            include: { payments: true, contract: { include: { room: true } } },
+            include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
           });
           if (invoice) {
             this.setPaymentContextWithTimeout(userId, invoice.id);
@@ -5666,9 +5666,13 @@ export class LineService implements OnModuleInit {
       );
     }
 
+    const roomNum = invoice.contract?.room?.number || contract?.room?.number || '-';
+    const buildingName = invoice.contract?.room?.building?.name || invoice.contract?.room?.building?.code || contract?.room?.building?.name || contract?.room?.building?.code || '';
+    const displayRoom = buildingName ? `${buildingName} ห้อง ${roomNum}` : `ห้อง ${roomNum}`;
+
     await this.replyText(
       event.replyToken,
-      `รับสลิปแล้ว ห้อง ${invoice.contract?.room?.number || contract?.room?.number || '-'} อยู่ระหว่างตรวจสอบ`,
+      `รับสลิปแล้ว ${displayRoom} อยู่ระหว่างตรวจสอบ`,
     );
 
     const verifyUrl = await this.slipOk.verifyByUrl(
@@ -5760,10 +5764,15 @@ export class LineService implements OnModuleInit {
             period,
           });
           setTimeout(() => {
-            this.pushFlex(userId, flex).catch((e) => {
+            this.pushFlex(userId, flex).catch(async (e) => {
               this.logger.warn(
                 `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
               );
+              // Fallback to text message if Flex fails (e.g. quota exceeded)
+              const msg = 'ตัดยอดเรียบร้อยแล้วครับ';
+              try {
+                await this.pushMessage(userId, msg);
+              } catch {}
             });
           }, delayMs);
         } catch (e) {
@@ -5828,10 +5837,15 @@ export class LineService implements OnModuleInit {
           period,
         });
         setTimeout(() => {
-          this.pushFlex(userId, flex).catch((e) => {
+          this.pushFlex(userId, flex).catch(async (e) => {
             this.logger.warn(
               `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
             );
+            // Fallback to text message
+            const msg = `สลิปไม่ถูกต้อง: ${verify.message ?? 'กรุณาตรวจสอบสลิปอีกครั้ง'}`;
+            try {
+              await this.pushMessage(userId, msg);
+            } catch {}
           });
         }, delayMs);
       } catch (e) {
@@ -5849,13 +5863,24 @@ export class LineService implements OnModuleInit {
       this.logger.warn('Line Client not initialized');
       return;
     }
-    const res = await this.client.pushMessage({
-      to: userId,
-      messages: [{ type: 'text', text }],
-    });
-    this.recordMessage('push_text');
-    this.addRecentChat({ userId, type: 'sent_text', text, actor });
-    return res;
+    try {
+      const res = await this.client.pushMessage({
+        to: userId,
+        messages: [{ type: 'text', text }],
+      });
+      this.recordMessage('push_text');
+      this.addRecentChat({ userId, type: 'sent_text', text, actor });
+      return res;
+    } catch (e) {
+      // If push failed (e.g. rate limited or blocked), we can try multicast or just log error
+      // But typically we cannot recover easily if quota exceeded for push.
+      // However, if we are in a reply context (which we are not here, this is push),
+      // we are stuck.
+      // If the error is 429, we should just swallow it or log it, but here we want to ensure
+      // at least we tried.
+      this.logger.error(`Failed to push message to ${userId}: ${e}`);
+      throw e; // Rethrow so caller knows it failed
+    }
   }
 
   getMoveOutStateByTenantId = async (tenantId: string) => {
