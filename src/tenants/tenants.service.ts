@@ -3,6 +3,7 @@ import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LineService } from '../line/line.service';
+import { InvoiceStatus } from '@prisma/client';
 import {
   appendLog,
   readDeletedStore,
@@ -77,8 +78,9 @@ export class TenantsService {
     if (data.status === 'MOVED_OUT') {
       try {
         await this.lineService.disconnectTenant(id);
+        await this.cancelTenantInvoices(id);
       } catch (e) {
-        console.error(`Failed to disconnect tenant ${id}:`, e);
+        console.error(`Failed to handle move out for tenant ${id}:`, e);
       }
       data.lineUserId = null as any;
     }
@@ -105,6 +107,9 @@ export class TenantsService {
   async remove(id: string) {
     const t = await this.prisma.tenant.findUnique({ where: { id } });
     if (t) {
+      // Cancel active invoices before soft deleting
+      await this.cancelTenantInvoices(id);
+      
       softDeleteRecord('Tenant', id, { name: t.name, phone: t.phone });
       appendLog({
         action: 'DELETE',
@@ -114,5 +119,25 @@ export class TenantsService {
       });
     }
     return { ok: true };
+  }
+
+  private async cancelTenantInvoices(tenantId: string) {
+    // Find active contracts for this tenant
+    const contracts = await this.prisma.contract.findMany({
+      where: { tenantId, isActive: true },
+      select: { id: true },
+    });
+    const contractIds = contracts.map((c) => c.id);
+
+    if (contractIds.length > 0) {
+      // Cancel DRAFT and SENT invoices
+      await this.prisma.invoice.updateMany({
+        where: {
+          contractId: { in: contractIds },
+          status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT] },
+        },
+        data: { status: InvoiceStatus.CANCELLED },
+      });
+    }
   }
 }
