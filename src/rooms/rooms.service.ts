@@ -262,23 +262,76 @@ export class RoomsService {
     return this.prisma.room
       .findMany({
         orderBy: [{ building: { code: 'asc' } }, { number: 'asc' }],
-        include: {
+        select: {
+          id: true,
+          number: true,
+          floor: true,
+          status: true,
+          pricePerMonth: true,
+          waterOverrideAmount: true,
+          electricOverrideAmount: true,
+          buildingId: true,
           contracts: {
             where: { isActive: true },
             orderBy: { startDate: 'desc' },
             take: 1,
-            include: { tenant: true },
+            select: {
+              id: true,
+              tenantId: true,
+              roomId: true,
+              startDate: true,
+              endDate: true,
+              deposit: true,
+              currentRent: true,
+              occupantCount: true,
+              isActive: true,
+              contractImageUrl: true,
+              tenant: {
+                select: {
+                  id: true,
+                  name: true,
+                  nickname: true,
+                  phone: true,
+                  lineUserId: true,
+                  status: true,
+                },
+              },
+            },
           },
           meterReadings: {
             orderBy: { createdAt: 'desc' },
             take: 1,
+            select: {
+              id: true,
+              roomId: true,
+              month: true,
+              year: true,
+              waterReading: true,
+              electricReading: true,
+              createdAt: true,
+            },
           },
           maintenanceRequests: {
             where: { OR: [{ status: 'PENDING' }, { status: 'IN_PROGRESS' }] },
             orderBy: { createdAt: 'desc' },
             take: 1,
+            select: {
+              id: true,
+              roomId: true,
+              title: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+            },
           },
-          building: true,
+          building: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              floors: true,
+            },
+          },
         },
       })
       .then((list) => {

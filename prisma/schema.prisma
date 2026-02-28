@@ -103,6 +103,9 @@ model Tenant {
   contracts     Contract[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+  @@index([name])
 }
 
 model Room {
@@ -123,6 +126,8 @@ model Room {
   updatedAt     DateTime  @updatedAt
 
   @@unique([number, floor, buildingId])
+  @@index([buildingId])
+  @@index([status])
 }
 
 model DormConfig {
@@ -170,6 +175,10 @@ model Contract {
   
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  @@index([roomId])
+  @@index([tenantId])
+  @@index([isActive])
 }
 
 model MeterReading {
@@ -183,10 +192,12 @@ model MeterReading {
   
   room            Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
   
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@unique([roomId, month, year])
+  @@index([roomId])
+  @@index([year, month])
 }
 
 model Invoice {
@@ -211,6 +222,10 @@ model Invoice {
   
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  @@index([contractId])
+  @@index([year, month])
+  @@index([status])
 }
 
 model InvoiceItem {
@@ -236,6 +251,9 @@ model Payment {
   
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  @@index([invoiceId])
+  @@index([status])
 }
 
 model Building {

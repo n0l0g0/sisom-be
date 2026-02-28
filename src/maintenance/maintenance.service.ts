@@ -55,7 +55,20 @@ export class MaintenanceService {
   findAll() {
     return this.prisma.maintenanceRequest.findMany({
       include: {
-        room: true,
+        room: {
+          select: {
+            id: true,
+            number: true,
+            buildingId: true,
+            building: {
+              select: {
+                id: true,
+                name: true,
+                code: true,
+              },
+            },
+          },
+        },
       },
       orderBy: {
         createdAt: 'desc',

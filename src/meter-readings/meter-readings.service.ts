@@ -49,7 +49,21 @@ export class MeterReadingsService {
       .findMany({
         where,
         include: {
-          room: true,
+          room: {
+            select: {
+              id: true,
+              number: true,
+              floor: true,
+              buildingId: true,
+              building: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
+                },
+              },
+            },
+          },
         },
         orderBy: [
           { year: 'desc' },
@@ -68,7 +82,11 @@ export class MeterReadingsService {
     return this.prisma.meterReading.findUnique({
       where: { id },
       include: {
-        room: true,
+        room: {
+          include: {
+            building: true,
+          },
+        },
       },
     });
   }

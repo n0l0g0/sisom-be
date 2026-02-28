@@ -487,9 +487,30 @@ export class InvoicesService implements OnModuleInit {
     const invoices = await this.prisma.invoice.findMany({
       include: {
         contract: {
-          include: {
-            room: { include: { building: true } },
-            tenant: true,
+          select: {
+            id: true,
+            roomId: true,
+            room: {
+              select: {
+                id: true,
+                number: true,
+                floor: true,
+                building: {
+                  select: {
+                    id: true,
+                    name: true,
+                    code: true,
+                  },
+                },
+              },
+            },
+            tenant: {
+              select: {
+                id: true,
+                name: true,
+                nickname: true,
+              },
+            },
           },
         },
       },
@@ -526,9 +547,30 @@ export class InvoicesService implements OnModuleInit {
       },
       include: {
         contract: {
-          include: {
-            room: { include: { building: true } },
-            tenant: true,
+          select: {
+            id: true,
+            roomId: true,
+            room: {
+              select: {
+                id: true,
+                number: true,
+                floor: true,
+                building: {
+                  select: {
+                    id: true,
+                    name: true,
+                    code: true,
+                  },
+                },
+              },
+            },
+            tenant: {
+              select: {
+                id: true,
+                name: true,
+                nickname: true,
+              },
+            },
           },
         },
       },
