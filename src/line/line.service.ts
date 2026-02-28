@@ -1125,99 +1125,106 @@ export class LineService implements OnModuleInit {
     userId: string | null | undefined,
     replyToken: string,
   ) {
-    const contactMatch = this.findRoomContactByPhones(variants);
-    if (contactMatch && userId) {
-      const store = this.readRoomContactsStore() || {};
-      const list = store[contactMatch.roomId] || [];
-      const idx = list.findIndex((c) => c.id === contactMatch.contact.id);
-      if (idx >= 0) {
-        const existing = list[idx];
-        if (existing.lineUserId) {
-          if (existing.lineUserId === userId) {
+    try {
+      this.logger.log(`handlePhoneRegistration: variants=${JSON.stringify(variants)} userId=${userId}`);
+      const contactMatch = this.findRoomContactByPhones(variants);
+      if (contactMatch && userId) {
+        const store = this.readRoomContactsStore() || {};
+        const list = store[contactMatch.roomId] || [];
+        const idx = list.findIndex((c) => c.id === contactMatch.contact.id);
+        if (idx >= 0) {
+          const existing = list[idx];
+          if (existing.lineUserId) {
+            if (existing.lineUserId === userId) {
+              return this.replyText(
+                replyToken,
+                'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+              );
+            }
             return this.replyText(
               replyToken,
-              'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+              'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
             );
+          }
+          const now = new Date().toISOString();
+          const updated: RoomContact = {
+            ...existing,
+            lineUserId: userId,
+            updatedAt: now,
+          };
+          const nextList = [...list];
+          nextList[idx] = updated;
+          store[contactMatch.roomId] = nextList;
+          this.writeRoomContactsStore(store);
+          if (this.isStaffUser(userId)) {
+            await this.linkMenuForUser(userId, 'ADMIN');
+          } else {
+            await this.linkMenuForUser(userId, 'TENANT');
           }
           return this.replyText(
             replyToken,
-            'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+            `เชื่อมบัญชี LINE กับห้องพักเรียบร้อยแล้ว (${updated.name || updated.phone})`,
           );
         }
-        const now = new Date().toISOString();
-        const updated: RoomContact = {
-          ...existing,
-          lineUserId: userId,
-          updatedAt: now,
-        };
-        const nextList = [...list];
-        nextList[idx] = updated;
-        store[contactMatch.roomId] = nextList;
-        this.writeRoomContactsStore(store);
+      }
+
+      const tenant = await this.prisma.tenant.findFirst({
+        where: {
+          OR: variants.map((p) => ({ phone: p })),
+        },
+      });
+
+      if (!tenant) {
+        this.logger.log(`handlePhoneRegistration: Tenant not found for ${JSON.stringify(variants)}`);
+        const message = [
+          'ไม่พบข้อมูลในระบบ',
+          '',
+          'หากมีการเปลี่ยนเบอร์โทร กรุณาเขียนเบอร์ใหม่ลงบนบิลค่าเช่า แล้วถ่ายรูปส่งกลับทางไลน์',
+          '',
+          'หากต้องการเพิ่มผู้เชื่อมต่อ กรุณาเขียนชื่อ–เบอร์โทร ลงบนบิล แล้วถ่ายรูปส่งมาอีกครั้ง',
+        ].join('\n');
+        return this.replyText(replyToken, message);
+      }
+
+      if (tenant.lineUserId) {
+        if (tenant.lineUserId === userId) {
+          const msg = [
+            'เชื่อมต่อสำเร็จ 🎉',
+            'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
+            'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
+            'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
+          ].join('\n');
+          return this.replyText(replyToken, msg);
+        }
+        return this.replyText(
+          replyToken,
+          'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+        );
+      }
+
+      await this.prisma.tenant.update({
+        where: { id: tenant.id },
+        data: { lineUserId: userId || undefined },
+      });
+      if (userId) {
         if (this.isStaffUser(userId)) {
           await this.linkMenuForUser(userId, 'ADMIN');
         } else {
           await this.linkMenuForUser(userId, 'TENANT');
         }
-        return this.replyText(
-          replyToken,
-          `เชื่อมบัญชี LINE กับห้องพักเรียบร้อยแล้ว (${updated.name || updated.phone})`,
-        );
       }
-    }
 
-    const tenant = await this.prisma.tenant.findFirst({
-      where: {
-        OR: variants.map((p) => ({ phone: p })),
-      },
-    });
-
-    if (!tenant) {
-      const message = [
-        'ไม่พบข้อมูลในระบบ',
-        '',
-        'หากมีการเปลี่ยนเบอร์โทร กรุณาเขียนเบอร์ใหม่ลงบนบิลค่าเช่า แล้วถ่ายรูปส่งกลับทางไลน์',
-        '',
-        'หากต้องการเพิ่มผู้เชื่อมต่อ กรุณาเขียนชื่อ–เบอร์โทร ลงบนบิล แล้วถ่ายรูปส่งมาอีกครั้ง',
+      const msg = [
+        'เชื่อมต่อสำเร็จ 🎉',
+        'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
+        'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
+        'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
       ].join('\n');
-      return this.replyText(replyToken, message);
+      return this.replyText(replyToken, msg);
+    } catch (e) {
+      this.logger.error(`handlePhoneRegistration error: ${e instanceof Error ? e.message : String(e)}`, e instanceof Error ? e.stack : undefined);
+      return this.replyText(replyToken, 'เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง หรือติดต่อเจ้าหน้าที่');
     }
-
-    if (tenant.lineUserId) {
-      if (tenant.lineUserId === userId) {
-        const msg = [
-          'เชื่อมต่อสำเร็จ 🎉',
-          'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
-          'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
-          'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
-        ].join('\n');
-        return this.replyText(replyToken, msg);
-      }
-      return this.replyText(
-        replyToken,
-        'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
-      );
-    }
-
-    await this.prisma.tenant.update({
-      where: { id: tenant.id },
-      data: { lineUserId: userId || undefined },
-    });
-    if (userId) {
-      if (this.isStaffUser(userId)) {
-        await this.linkMenuForUser(userId, 'ADMIN');
-      } else {
-        await this.linkMenuForUser(userId, 'TENANT');
-      }
-    }
-
-    const msg = [
-      'เชื่อมต่อสำเร็จ 🎉',
-      'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
-      'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
-      'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
-    ].join('\n');
-    return this.replyText(replyToken, msg);
   }
 
   private getRoomContactsFilePath() {
@@ -1265,9 +1272,12 @@ export class LineService implements OnModuleInit {
 
   private findRoomContactByPhones(variants: string[]) {
     const store = this.readRoomContactsStore() || {};
+    this.logger.log(`findRoomContactByPhones: variants=${JSON.stringify(variants)}, storeKeys=${Object.keys(store).length}`);
     for (const [roomId, list] of Object.entries(store)) {
       for (const c of list) {
-        if (variants.includes(c.phone)) {
+        const cleanPhone = (c.phone || '').replace(/[^\d+]/g, '');
+        if (variants.includes(cleanPhone)) {
+          this.logger.log(`findRoomContactByPhones: match found roomId=${roomId} contact=${c.phone}`);
           return { roomId, contact: c };
         }
       }
@@ -1389,16 +1399,24 @@ export class LineService implements OnModuleInit {
     userId: string,
     kind: 'GENERAL' | 'TENANT' | 'ADMIN',
   ) {
-    if (kind === 'ADMIN' && this.richMenuAdminId) {
-      return this.linkRichMenu(userId, this.richMenuAdminId);
+    if (kind === 'ADMIN') {
+      if (this.richMenuAdminId) {
+        return this.linkRichMenu(userId, this.richMenuAdminId);
+      }
     }
-    if (kind === 'TENANT' && this.richMenuTenantId) {
-      return this.linkRichMenu(userId, this.richMenuTenantId);
+    if (kind === 'TENANT') {
+      if (this.richMenuTenantId) {
+        return this.linkRichMenu(userId, this.richMenuTenantId);
+      }
     }
     if (kind === 'GENERAL') {
       const generalId = this.getGeneralRichMenuId();
       if (generalId) {
         return this.linkRichMenu(userId, generalId);
+      } else {
+        // If no general menu is set, unlink any existing menu (e.g. Admin/Tenant)
+        // so the user falls back to the default menu (or no menu).
+        return this.unlinkRichMenu(userId);
       }
     }
   }
@@ -1425,6 +1443,61 @@ export class LineService implements OnModuleInit {
 
   isStaff(userId?: string | null): boolean {
     return this.isStaffUser(userId);
+  }
+
+  async disconnectTenant(tenantId: string) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    if (!tenant) return;
+
+    const lineUserId = tenant.lineUserId;
+    if (lineUserId) {
+      // Unlink Rich Menu and set to GENERAL
+      await this.linkMenuForUser(lineUserId, 'GENERAL');
+      
+      // Clear from RoomContacts by LineUserId
+      this.removeRoomContactByLineUserId(lineUserId);
+    }
+
+    if (tenant.phone) {
+      // Clear from RoomContacts by Phone
+      this.removeRoomContactByPhone(tenant.phone);
+    }
+  }
+
+  private removeRoomContactByLineUserId(lineUserId: string) {
+    const store = this.readRoomContactsStore() || {};
+    let changed = false;
+    for (const [roomId, contacts] of Object.entries(store)) {
+      const filtered = contacts.filter((c) => c.lineUserId !== lineUserId);
+      if (filtered.length !== contacts.length) {
+        store[roomId] = filtered;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.writeRoomContactsStore(store);
+    }
+  }
+
+  private removeRoomContactByPhone(phone: string) {
+    const store = this.readRoomContactsStore() || {};
+    let changed = false;
+    const cleanTarget = phone.replace(/\s|-/g, '');
+    for (const [roomId, contacts] of Object.entries(store)) {
+      const filtered = contacts.filter((c) => {
+        const cPhone = (c.phone || '').replace(/\s|-/g, '');
+        return cPhone !== cleanTarget;
+      });
+      if (filtered.length !== contacts.length) {
+        store[roomId] = filtered;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.writeRoomContactsStore(store);
+    }
   }
 
   async handleEvent(event: WebhookEvent) {
@@ -3538,71 +3611,31 @@ export class LineService implements OnModuleInit {
       if (userId) await this.pushFlex(userId, ratesMessage);
       return null;
     }
-    if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(text)) {
+    const cleanPhone = text.replace(/[^\d+]/g, '');
+    if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(cleanPhone)) {
       const variants = this.phoneVariants(text);
+      this.logger.log(`register-flow: phone received ${JSON.stringify(variants)} ctx=${this.registerPhoneContext.get(userId || '') ? 'yes' : 'no'}`);
 
+      // If user is in registration context, proceed directly
       if (userId && this.registerPhoneContext.get(userId)) {
         this.registerPhoneContext.delete(userId);
         this.clearRegisterPhoneTimer(userId);
         return this.handlePhoneRegistration(variants, userId, event.replyToken);
       }
 
+      // Even if not in context, attempt direct registration when phone exists
+      const contactMatch = this.findRoomContactByPhones(variants);
       const tenant = await this.prisma.tenant.findFirst({
         where: { OR: variants.map((p) => ({ phone: p })) },
       });
-      if (!tenant) {
-        return this.replyText(
-          event.replyToken,
-          'ไม่พบเบอร์ในระบบ กรุณาติดต่อผู้ดูแล',
-        );
+      if (contactMatch || tenant) {
+        return this.handlePhoneRegistration(variants, userId, event.replyToken);
       }
-      const contract = await this.prisma.contract.findFirst({
-        where: { tenantId: tenant.id, isActive: true },
-        include: { room: { include: { building: true } } },
-      });
-      if (!contract?.room) {
-        return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
-      }
-      const buildingLabel =
-        contract.room.building?.name || contract.room.building?.code || '-';
-      const roomId = contract.room.id;
-      const list = this.linkRequests.get(roomId) || [];
-      this.linkRequests.set(roomId, [
-        ...list.filter((r) => r.userId !== (userId || '')),
-        {
-          userId: userId || '',
-          phone: tenant.phone,
-          tenantId: tenant.id,
-          createdAt: new Date(),
-        },
-      ]);
-      const msg: any = {
-        type: 'text',
-        text: `ตรวจพบข้อมูลหอพักที่ ${buildingLabel} ชั้น ${contract.room.floor} ห้อง ${contract.room.number} ถูกต้องหรือไม่?`,
-        quickReply: {
-          items: [
-            {
-              type: 'action',
-              action: {
-                type: 'postback',
-                label: 'ยืนยันเชื่อม',
-                data: `LINK_ACCEPT=${roomId}:${tenant.id}`,
-                displayText: 'ยืนยันเชื่อม',
-              },
-            },
-            {
-              type: 'action',
-              action: {
-                type: 'postback',
-                label: 'ปฏิเสธ',
-                data: `LINK_REJECT=${roomId}`,
-                displayText: 'ปฏิเสธ',
-              },
-            },
-          ],
-        },
-      };
-      return this.replyFlex(event.replyToken, msg);
+
+      return this.replyText(
+        event.replyToken,
+        'ไม่พบเบอร์ในระบบ กรุณาติดต่อผู้ดูแล',
+      );
     }
 
     if (text.includes('แจ้งย้าย')) {
@@ -4632,7 +4665,7 @@ export class LineService implements OnModuleInit {
   }
 
   private phoneVariants(input: string): string[] {
-    const raw = (input || '').replace(/\s|-/g, '');
+    const raw = (input || '').replace(/[^\d+]/g, '');
     const list = new Set<string>();
     list.add(raw);
     if (/^\+66\d{9}$/.test(raw)) {
@@ -5670,10 +5703,10 @@ export class LineService implements OnModuleInit {
     const buildingName = invoice.contract?.room?.building?.name || invoice.contract?.room?.building?.code || contract?.room?.building?.name || contract?.room?.building?.code || '';
     const displayRoom = buildingName ? `${buildingName} ห้อง ${roomNum}` : `ห้อง ${roomNum}`;
 
-    await this.replyText(
-      event.replyToken,
-      `รับสลิปแล้ว ${displayRoom} อยู่ระหว่างตรวจสอบ`,
-    );
+    // await this.replyText(
+    //   event.replyToken,
+    //   `รับสลิปแล้ว ${displayRoom} อยู่ระหว่างตรวจสอบ`,
+    // );
 
     const verifyUrl = await this.slipOk.verifyByUrl(
       slipUrl,
@@ -5693,6 +5726,105 @@ export class LineService implements OnModuleInit {
       message: verify.message,
       duplicate: verify.duplicate ?? false,
     };
+
+    const isQuotaError =
+      !verify.ok &&
+      !verify.duplicate &&
+      /quota|โควต้า|basic|package|limit|หมด/i.test(verify.message || '');
+
+    if (isQuotaError) {
+      const paymentAmount = Number(invoice.totalAmount);
+      await this.prisma.payment.create({
+        data: {
+          invoiceId: invoice.id,
+          amount: paymentAmount,
+          slipImageUrl: slipUrl,
+          slipBankRef: JSON.stringify(slipMeta),
+          status: PaymentStatus.PENDING,
+        },
+      });
+      const roomNum =
+        invoice.contract?.room?.number || contract?.room?.number || '-';
+      const buildingName =
+        invoice.contract?.room?.building?.name ||
+        invoice.contract?.room?.building?.code ||
+        contract?.room?.building?.name ||
+        contract?.room?.building?.code ||
+        '';
+      const displayRoom = buildingName
+        ? `${buildingName} ห้อง ${roomNum}`
+        : `ห้อง ${roomNum}`;
+      await this.replyText(
+        event.replyToken,
+        `รับสลิปแล้ว ${displayRoom}\nระบบจะตรวจสอบโดยเจ้าหน้าที่และยืนยันผลให้ภายในเร็ว ๆ นี้`,
+      );
+      return null;
+    }
+
+    // De-duplication: avoid creating duplicated payments
+    try {
+      let isDup = false;
+      if (verify.bankRef && String(verify.bankRef).trim().length > 0) {
+        const byRef = await this.prisma.payment.findFirst({
+          where: {
+            invoiceId: invoice.id,
+            slipBankRef: { contains: String(verify.bankRef) },
+          },
+        });
+        if (byRef) isDup = true;
+      }
+      if (!isDup) {
+        const recent = await this.prisma.payment.findMany({
+          where: { invoiceId: invoice.id },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+        });
+        const paidAtTarget = verify.transactedAt
+          ? new Date(verify.transactedAt).getTime()
+          : undefined;
+        const now = Date.now();
+        for (const p of recent) {
+          const sameAmount =
+            Math.abs(Number(p.amount) - Number(verify.amount ?? invoice.totalAmount)) <= 1;
+          const createdClose = Math.abs(new Date(p.createdAt).getTime() - now) <= 120000;
+          const paidAtClose =
+            paidAtTarget !== undefined &&
+            p.paidAt !== null &&
+            Math.abs(new Date(p.paidAt).getTime() - paidAtTarget) <= 120000;
+          if (sameAmount && (paidAtClose || createdClose)) {
+            isDup = true;
+            break;
+          }
+        }
+      }
+      if (isDup) {
+        const when = verify.transactedAt
+          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
+              timeZone: 'Asia/Bangkok',
+            })
+          : '—';
+        const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
+        const roomNum =
+          invoice.contract?.room?.number || contract?.room?.number || '-';
+        const flex = this.buildSlipFlex('DUPLICATE', {
+          room: roomNum,
+          origin:
+            [verify.sourceBank, verify.sourceAccount].filter(Boolean).join(' / ') ||
+            '—',
+        dest:
+            [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
+            '—',
+          when,
+          period,
+        });
+        await this.replyFlex(event.replyToken, flex);
+        return null;
+      }
+    } catch (e) {
+      this.logger.warn(
+        `dedup check failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
 
     const paymentAmount = verify.amount ?? Number(invoice.totalAmount);
     await this.prisma.payment.create({
@@ -5728,7 +5860,7 @@ export class LineService implements OnModuleInit {
       });
     }
 
-    const delayMs = 1000; // Reduced delay for better UX
+    // const delayMs = 1000; // Reduced delay for better UX
     if (verify.ok) {
       if (remaining > 1) {
         // Partial payment case
@@ -5755,30 +5887,29 @@ export class LineService implements OnModuleInit {
           const amt = paymentAmount.toLocaleString();
           const roomNum =
             invoice.contract?.room?.number || contract?.room?.number || '-';
+          const buildingLabel =
+            invoice.contract?.room?.building?.name ||
+            invoice.contract?.room?.building?.code ||
+            contract?.room?.building?.name ||
+            contract?.room?.building?.code ||
+            '';
           const flex = this.buildSlipFlex('SUCCESS', {
             amount: amt,
             room: roomNum,
+            buildingLabel,
             origin,
             dest,
             when,
             period,
           });
-          setTimeout(() => {
-            this.pushFlex(userId, flex).catch(async (e) => {
-              this.logger.warn(
-                `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
-              );
-              // Fallback to text message if Flex fails (e.g. quota exceeded)
-              const msg = 'ตัดยอดเรียบร้อยแล้วครับ';
-              try {
-                await this.pushMessage(userId, msg);
-              } catch {}
-            });
-          }, delayMs);
+          await this.replyFlex(event.replyToken, flex);
         } catch (e) {
           this.logger.warn(
-            `Failed to push flex: ${e instanceof Error ? e.message : String(e)}`,
+            `Failed to reply flex: ${e instanceof Error ? e.message : String(e)}`,
           );
+          try {
+            await this.replyText(event.replyToken, 'ตัดยอดเรียบร้อยแล้วครับ');
+          } catch {}
         }
       }
     } else if (verify.duplicate) {
@@ -5791,8 +5922,15 @@ export class LineService implements OnModuleInit {
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
         const roomNum =
           invoice.contract?.room?.number || contract?.room?.number || '-';
+        const buildingLabel =
+          invoice.contract?.room?.building?.name ||
+          invoice.contract?.room?.building?.code ||
+          contract?.room?.building?.name ||
+          contract?.room?.building?.code ||
+          '';
         const flex = this.buildSlipFlex('DUPLICATE', {
           room: roomNum,
+          buildingLabel,
           origin:
             [verify.sourceBank, verify.sourceAccount]
               .filter(Boolean)
@@ -5803,22 +5941,17 @@ export class LineService implements OnModuleInit {
           when,
           period,
         });
-        setTimeout(() => {
-          this.pushFlex(userId, flex).catch(async (e) => {
-            this.logger.warn(
-              `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
-            );
-            const msg =
-              'ระบบตรวจพบว่าคุณได้แจ้งชำระไว้แล้ว กรุณารอทีมงานตรวจสอบและยืนยันผล ขอบคุณค่ะ/ครับ';
-            try {
-              await this.pushMessage(userId, msg);
-            } catch {}
-          });
-        }, delayMs);
+        await this.replyFlex(event.replyToken, flex);
       } catch (e) {
         this.logger.warn(
-          `Failed to push flex: ${e instanceof Error ? e.message : String(e)}`,
+          `Failed to reply flex: ${e instanceof Error ? e.message : String(e)}`,
         );
+        try {
+          await this.replyText(
+            event.replyToken,
+            'ระบบตรวจพบว่าคุณได้แจ้งชำระไว้แล้ว กรุณารอทีมงานตรวจสอบและยืนยันผล ขอบคุณค่ะ/ครับ',
+          );
+        } catch {}
       }
     } else {
       try {
@@ -5830,28 +5963,30 @@ export class LineService implements OnModuleInit {
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
         const roomNum =
           invoice.contract?.room?.number || contract?.room?.number || '-';
+        const buildingLabel =
+          invoice.contract?.room?.building?.name ||
+          invoice.contract?.room?.building?.code ||
+          contract?.room?.building?.name ||
+          contract?.room?.building?.code ||
+          '';
         const flex = this.buildSlipFlex('INVALID', {
           room: roomNum,
+          buildingLabel,
           when,
           reason: verify.message ?? 'สลิปไม่ถูกต้อง',
           period,
         });
-        setTimeout(() => {
-          this.pushFlex(userId, flex).catch(async (e) => {
-            this.logger.warn(
-              `pushFlex failed: ${e instanceof Error ? e.message : String(e)}`,
-            );
-            // Fallback to text message
-            const msg = `สลิปไม่ถูกต้อง: ${verify.message ?? 'กรุณาตรวจสอบสลิปอีกครั้ง'}`;
-            try {
-              await this.pushMessage(userId, msg);
-            } catch {}
-          });
-        }, delayMs);
+        await this.replyFlex(event.replyToken, flex);
       } catch (e) {
         this.logger.warn(
-          `Failed to push flex: ${e instanceof Error ? e.message : String(e)}`,
+          `Failed to reply flex: ${e instanceof Error ? e.message : String(e)}`,
         );
+        try {
+          await this.replyText(
+            event.replyToken,
+            `สลิปไม่ถูกต้อง: ${verify.message ?? 'กรุณาตรวจสอบสลิปอีกครั้ง'}`,
+          );
+        } catch {}
       }
     }
 
@@ -6328,22 +6463,35 @@ export class LineService implements OnModuleInit {
 
   apiMapLineUserRole(body: {
     userId: string;
-    role: 'STAFF' | 'ADMIN' | 'OWNER';
+    role: 'STAFF' | 'ADMIN' | 'OWNER' | 'USER';
   }) {
     const userId = (body.userId || '').trim();
     const role = body.role;
     if (!userId) return { ok: false, error: 'userId is required' };
-    if (!['STAFF', 'ADMIN', 'OWNER'].includes(role))
+    if (!['STAFF', 'ADMIN', 'OWNER', 'USER'].includes(role))
       return { ok: false, error: 'invalid role' };
+
+    // Remove from all lists first
+    const remove = (arr: string[]) => {
+      const idx = arr.indexOf(userId);
+      if (idx !== -1) arr.splice(idx, 1);
+    };
+    remove(this.staffUserIds);
+    remove(this.adminUserIds);
+
     const add = (arr: string[]) => {
       if (!arr.includes(userId)) arr.push(userId);
     };
+
     if (role === 'STAFF') add(this.staffUserIds);
     if (role === 'ADMIN') add(this.adminUserIds);
     if (role === 'OWNER') {
       add(this.adminUserIds);
       add(this.staffUserIds);
     }
+    
+    // USER role just means removed from staff/admin lists
+
     return {
       ok: true,
       staffCount: this.staffUserIds.length,
@@ -6400,6 +6548,7 @@ export class LineService implements OnModuleInit {
     data: {
       amount?: string;
       room: string;
+      buildingLabel?: string;
       origin?: string;
       dest?: string;
       when: string;
@@ -6454,13 +6603,19 @@ export class LineService implements OnModuleInit {
         wrap: true,
       });
     }
-    rows.push({
-      type: 'text',
-      text: `ห้อง ${data.room}`,
-      size: 'sm',
-      color: '#666666',
-      wrap: true,
-    });
+    {
+      const roomLine =
+        data.buildingLabel && data.buildingLabel.trim()
+          ? `ตึก ${data.buildingLabel.trim()} ห้อง ${data.room}`
+          : `ห้อง ${data.room}`;
+      rows.push({
+        type: 'text',
+        text: roomLine,
+        size: 'sm',
+        color: '#666666',
+        wrap: true,
+      });
+    }
     if (data.origin) {
       rows.push({
         type: 'text',
@@ -6559,6 +6714,7 @@ export class LineService implements OnModuleInit {
   async pushSuccessFlex(
     userId: string,
     room: string,
+    buildingLabel?: string,
     amount?: number,
     when?: Date,
     dest?: string,
@@ -6572,6 +6728,7 @@ export class LineService implements OnModuleInit {
     const flex = this.buildSlipFlex('SUCCESS', {
       amount: amtStr,
       room,
+      buildingLabel,
       dest,
       when: whenStr,
       period,

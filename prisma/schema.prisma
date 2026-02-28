@@ -13,6 +13,8 @@ datasource db {
 enum Role {
   OWNER
   ADMIN
+  STAFF
+  USER
 }
 
 enum TenantStatus {
@@ -94,6 +96,7 @@ model Tenant {
   nickname      String?
   phone         String    @unique
   idCard        String?
+  idCardImageUrl String?
   address       String?
   lineUserId    String?   @unique
   status        TenantStatus @default(ACTIVE)

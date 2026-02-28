@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { LineService } from '../line/line.service';
 import {
   appendLog,
   readDeletedStore,
@@ -10,12 +11,19 @@ import {
 
 @Injectable()
 export class TenantsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private lineService: LineService,
+  ) {}
 
   create(createTenantDto: CreateTenantDto) {
+    const data = { ...createTenantDto };
+    if (data.lineUserId === '') {
+      data.lineUserId = undefined; // let prisma treat it as null/undefined
+    }
     return this.prisma.tenant
       .create({
-        data: createTenantDto,
+        data,
       })
       .then((t) => {
         appendLog({
@@ -35,7 +43,12 @@ export class TenantsService {
         include: {
           contracts: {
             where: includeHistory ? undefined : { isActive: true },
-            include: { room: true },
+            include: {
+              room: true,
+              invoices: {
+                select: { status: true, totalAmount: true },
+              },
+            },
             orderBy: { startDate: 'desc' },
           },
         },
@@ -58,11 +71,25 @@ export class TenantsService {
     });
   }
 
-  update(id: string, updateTenantDto: UpdateTenantDto) {
+  async update(id: string, updateTenantDto: UpdateTenantDto) {
+    const data = { ...updateTenantDto };
+    
+    if (data.status === 'MOVED_OUT') {
+      try {
+        await this.lineService.disconnectTenant(id);
+      } catch (e) {
+        console.error(`Failed to disconnect tenant ${id}:`, e);
+      }
+      data.lineUserId = null as any;
+    }
+
+    if (data.lineUserId === '') {
+      data.lineUserId = null as any; // force null
+    }
     return this.prisma.tenant
       .update({
         where: { id },
-        data: updateTenantDto,
+        data,
       })
       .then((t) => {
         appendLog({

@@ -4,6 +4,8 @@ import type { Role } from '@prisma/client';
 const RoleEnum = {
   OWNER: 'OWNER',
   ADMIN: 'ADMIN',
+  STAFF: 'STAFF',
+  USER: 'USER',
 } as const;
 
 export class CreateUserDto {

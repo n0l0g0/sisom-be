@@ -19,6 +19,10 @@ export class CreateTenantDto {
 
   @IsString()
   @IsOptional()
+  idCardImageUrl?: string;
+
+  @IsString()
+  @IsOptional()
   address?: string;
 
   @IsString()

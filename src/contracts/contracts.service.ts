@@ -93,9 +93,14 @@ export class ContractsService {
     return contract;
   }
 
-  findAll() {
+  findAll(filters?: { isActive?: boolean }) {
+    const where: Prisma.ContractWhereInput = {};
+    if (filters?.isActive !== undefined) {
+      where.isActive = filters.isActive;
+    }
     return this.prisma.contract
       .findMany({
+        where,
         include: {
           tenant: true,
           room: {

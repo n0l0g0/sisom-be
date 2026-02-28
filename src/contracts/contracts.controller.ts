@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
 } from '@nestjs/common';
 import { ContractsService } from './contracts.service';
 import { CreateContractDto } from './dto/create-contract.dto';
@@ -21,8 +22,10 @@ export class ContractsController {
   }
 
   @Get()
-  findAll() {
-    return this.contractsService.findAll();
+  findAll(@Query('isActive') isActive?: string) {
+    return this.contractsService.findAll({ 
+      isActive: isActive === 'true' ? true : isActive === 'false' ? false : undefined 
+    });
   }
 
   @Get(':id')

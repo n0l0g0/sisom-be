@@ -29,7 +29,7 @@ export class PaymentsService {
       });
   }
 
-  findAll(filters?: { room?: string; status?: PaymentStatus }) {
+  findAll(filters?: { room?: string; status?: PaymentStatus; month?: number; year?: number }) {
     const where: Prisma.PaymentWhereInput = {};
     if (filters?.status) {
       where.status = filters.status;
@@ -46,6 +46,16 @@ export class PaymentsService {
               },
             },
           },
+        },
+      };
+    }
+    if (filters?.month || filters?.year) {
+      where.invoice = {
+        ...where.invoice,
+        is: {
+          ...((where.invoice as any)?.is || {}),
+          ...(filters.month ? { month: filters.month } : {}),
+          ...(filters.year ? { year: filters.year } : {}),
         },
       };
     }
@@ -128,24 +138,38 @@ export class PaymentsService {
         typeof payment.invoice.year === 'number'
           ? `${['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'][Math.max(0, Math.min(11, payment.invoice.month - 1))]} ${payment.invoice.year}`
           : undefined;
+
+      console.log(`[Payment Verify] ID: ${id}, Tenant: ${tenant?.id}, LineID: ${tenant?.lineUserId}, Room: ${room}`);
+
       if (tenant && tenant.lineUserId && room) {
         try {
+          console.log(`[Payment Verify] Sending Flex to ${tenant.lineUserId}`);
+          const buildingLabel =
+            payment.invoice?.contract?.room?.building?.name ||
+            payment.invoice?.contract?.room?.building?.code ||
+            undefined;
           await this.lineService.pushSuccessFlex(
             tenant.lineUserId,
             room,
+            buildingLabel,
             Number(payment.amount),
             paidAt,
             undefined,
             period,
           );
+          console.log(`[Payment Verify] Flex sent`);
         } catch (e) {
+          console.error(`[Payment Verify] Flex failed: ${e instanceof Error ? e.message : String(e)}`);
           const msg = 'ตัดยอดเรียบร้อยแล้วครับ';
           try {
             await this.lineService.pushMessage(tenant.lineUserId, msg);
-          } catch {
-            // ignore
+            console.log(`[Payment Verify] Fallback text sent`);
+          } catch (e2) {
+            console.error(`[Payment Verify] Fallback failed: ${e2 instanceof Error ? e2.message : String(e2)}`);
           }
         }
+      } else {
+        console.warn(`[Payment Verify] Skip notification: Missing data`);
       }
       if (room) {
         try {

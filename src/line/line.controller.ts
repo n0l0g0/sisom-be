@@ -138,7 +138,7 @@ export class LineController {
 
   @Post('roles/map')
   async mapLineUserRole(
-    @Body() body: { userId: string; role: 'STAFF' | 'ADMIN' | 'OWNER' },
+    @Body() body: { userId: string; role: 'STAFF' | 'ADMIN' | 'OWNER' | 'USER' },
   ) {
     return this.lineService.apiMapLineUserRole(body);
   }

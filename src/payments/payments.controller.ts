@@ -40,8 +40,15 @@ export class PaymentsController {
   findAll(
     @Query('room') room?: string,
     @Query('status') status?: PaymentStatus,
+    @Query('month') month?: string,
+    @Query('year') year?: string,
   ) {
-    return this.paymentsService.findAll({ room, status });
+    return this.paymentsService.findAll({ 
+      room, 
+      status,
+      month: month ? Number(month) : undefined,
+      year: year ? Number(year) : undefined,
+    });
   }
 
   @Get(':id')
