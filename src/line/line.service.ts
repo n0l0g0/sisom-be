@@ -755,9 +755,9 @@ export class LineService implements OnModuleInit {
     let message = '';
     
     if (data.type === 'NEW') {
-      message = `${buildingPart} ห้อง ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ แล้วครับ`;
     } else {
-      message = `${buildingPart} ห้อง ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
     }
 
     for (const s of staff) {
