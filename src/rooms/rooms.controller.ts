@@ -56,20 +56,20 @@ export class RoomsController {
   }
 
   @Post(':id/contacts/:contactId/clear-line')
-  clearContactLine(
+  async clearContactLine(
     @Param('id') id: string,
     @Param('contactId') contactId: string,
   ) {
-    const contacts = this.roomsService.clearRoomContactLine(id, contactId);
+    const contacts = await this.roomsService.clearRoomContactLine(id, contactId);
     return { contacts };
   }
 
   @Delete(':id/contacts/:contactId')
-  deleteContact(
+  async deleteContact(
     @Param('id') id: string,
     @Param('contactId') contactId: string,
   ) {
-    const contacts = this.roomsService.deleteRoomContact(id, contactId);
+    const contacts = await this.roomsService.deleteRoomContact(id, contactId);
     return { contacts };
   }
 
