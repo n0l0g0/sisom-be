@@ -3,6 +3,7 @@ import { messagingApi, WebhookEvent } from '@line/bot-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { MediaService } from '../media/media.service';
 import { SlipOkService } from '../slipok/slipok.service';
+import { SettingsService } from '../settings/settings.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -1214,9 +1215,12 @@ export class LineService implements OnModuleInit {
         }
       }
 
+      const config = await this.settingsService.getDormConfig();
+      const dormName = config?.dormName || 'หอพักสีส้ม';
+
       const msg = [
         'เชื่อมต่อสำเร็จ 🎉',
-        'ยินดีต้อนรับสู่ หอพักสีส้ม 🧡',
+        `ยินดีต้อนรับสู่ ${dormName} 🧡`,
         'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
         'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
       ].join('\n');
@@ -1303,6 +1307,7 @@ export class LineService implements OnModuleInit {
     private prisma: PrismaService,
     private mediaService: MediaService,
     private slipOk: SlipOkService,
+    private settingsService: SettingsService,
   ) {
     if (this.channelAccessToken) {
       this.client = new messagingApi.MessagingApiClient({
