@@ -453,11 +453,20 @@ export class InvoicesService implements OnModuleInit {
           'th-TH',
           { month: 'long', year: 'numeric' },
         );
+        
+        let type: 'NEW' | 'NORMAL' = 'NORMAL';
+        if (full.contract.startDate && full.createdAt) {
+          const d1 = new Date(full.contract.startDate).toISOString().split('T')[0];
+          const d2 = new Date(full.createdAt).toISOString().split('T')[0];
+          if (d1 === d2) type = 'NEW';
+        }
+
         await this.lineService.notifyStaffPaymentVerified({
           room: room.number,
           buildingLabel: buildingName,
           amount: Number(full.totalAmount),
           month: monthLabel,
+          type,
         });
       }
       if (tenant?.lineUserId && method === 'DEPOSIT') {

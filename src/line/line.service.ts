@@ -742,6 +742,7 @@ export class LineService implements OnModuleInit {
     amount: number;
     month: string;
     slipUrl?: string;
+    type?: 'NEW' | 'NORMAL';
   }) {
     const staff = await this.prisma.user.findMany({
       where: {
@@ -750,11 +751,21 @@ export class LineService implements OnModuleInit {
       },
     });
 
-    const buildingPart = data.buildingLabel ? `${data.buildingLabel} / ` : '';
-    const message = `${buildingPart}ห้อง ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
+    const buildingPart = data.buildingLabel ? `${data.buildingLabel} /` : '';
+    let message = '';
+    
+    if (data.type === 'NEW') {
+      message = `${buildingPart} ห้อง ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ แล้วครับ`;
+    } else {
+      message = `${buildingPart} ห้อง ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
+    }
 
     for (const s of staff) {
       if (!s.lineUserId) continue;
+      
+      const permissions = Array.isArray(s.permissions) ? (s.permissions as string[]) : [];
+      if (!permissions.includes('line_notifications')) continue;
+
       try {
         await this.pushMessage(s.lineUserId, message);
       } catch (e) {
@@ -5946,12 +5957,21 @@ export class LineService implements OnModuleInit {
             period,
           });
           await this.replyFlex(event.replyToken, flex);
+
+          let type: 'NEW' | 'NORMAL' = 'NORMAL';
+          if (invoice.contract?.startDate && invoice.createdAt) {
+            const d1 = new Date(invoice.contract.startDate).toISOString().split('T')[0];
+            const d2 = new Date(invoice.createdAt).toISOString().split('T')[0];
+            if (d1 === d2) type = 'NEW';
+          }
+
           await this.notifyStaffPaymentVerified({
             room: roomNum,
             buildingLabel,
             amount: paymentAmount,
             month: period,
             slipUrl,
+            type,
           });
         } catch (e) {
           this.logger.warn(
