@@ -736,6 +736,35 @@ export class LineService implements OnModuleInit {
     }
   }
 
+  private async notifyStaffPaymentVerified(data: {
+    room: string;
+    buildingLabel?: string;
+    amount: number;
+    month: string;
+    slipUrl?: string;
+  }) {
+    const staff = await this.prisma.user.findMany({
+      where: {
+        role: { in: ['OWNER', 'ADMIN', 'STAFF'] },
+        lineUserId: { not: null },
+      },
+    });
+
+    const buildingPart = data.buildingLabel ? `${data.buildingLabel} / ` : '';
+    const message = `${buildingPart}ห้อง ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
+
+    for (const s of staff) {
+      if (!s.lineUserId) continue;
+      try {
+        await this.pushMessage(s.lineUserId, message);
+      } catch (e) {
+        this.logger.warn(
+          `Failed to notify staff ${s.username}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
   async notifyStaffMoveoutCreated(maintenanceId: string) {
     const maintenance: MaintenanceWithRoomContracts | null =
       await this.prisma.maintenanceRequest.findUnique({
@@ -5917,6 +5946,13 @@ export class LineService implements OnModuleInit {
             period,
           });
           await this.replyFlex(event.replyToken, flex);
+          await this.notifyStaffPaymentVerified({
+            room: roomNum,
+            buildingLabel,
+            amount: paymentAmount,
+            month: period,
+            slipUrl,
+          });
         } catch (e) {
           this.logger.warn(
             `Failed to reply flex: ${e instanceof Error ? e.message : String(e)}`,
