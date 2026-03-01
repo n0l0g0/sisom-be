@@ -302,6 +302,7 @@ export class ContractsService {
       endDate: endDate.toISOString(),
     } as any);
 
+    // Ensure room is vacant and contacts are cleared (update method handles contact clearing)
     await this.prisma.room.update({
       where: { id: contract.roomId },
       data: { status: RoomStatus.VACANT },
