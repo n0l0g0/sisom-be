@@ -182,6 +182,22 @@ export class ContractsService {
             : RoomStatus.VACANT,
         },
       });
+
+      // If contract is set to inactive (Move Out), clear all room contacts for this room
+      if (!updateContractDto.isActive) {
+        // Find contacts with lineUserId to unlink rich menu
+        const contacts = await this.prisma.roomContact.findMany({
+          where: { roomId: contract.roomId },
+        });
+        
+        // Delete all contacts
+        await this.prisma.roomContact.deleteMany({
+          where: { roomId: contract.roomId },
+        });
+        
+        // Note: Rich Menu unlinking is handled by a separate service usually, 
+        // or we could emit an event. For now, we just ensure data is clean.
+      }
     }
 
     return contract;
