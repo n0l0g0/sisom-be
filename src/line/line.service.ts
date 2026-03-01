@@ -1932,13 +1932,14 @@ export class LineService implements OnModuleInit {
         this.setPaymentContextWithTimeout(userId, invoice.id);
         const monthLabel = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
         const amount = Number(invoice.totalAmount).toLocaleString();
+        const config = await this.settingsService.getDormConfig();
         const flex = this.buildPayInfoFlex({
           room: contract.room.number,
           period: monthLabel,
           amount,
-          bankName: 'ธนาคารไทยพาณิชย์',
-          accountName: 'นาง สุนีย์ วงษ์จะบก',
-          accountNo: '800-253388-7',
+          bankName: '',
+          accountName: '',
+          accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
         });
         await this.pushFlex(userId, flex);
         return null;
@@ -3312,13 +3313,14 @@ export class LineService implements OnModuleInit {
       this.setPaymentContextWithTimeout(userId || '', invoice.id);
       const monthLabel = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
       const amount = Number(invoice.totalAmount).toLocaleString();
+      const config = await this.settingsService.getDormConfig();
       const flex = this.buildPayInfoFlex({
         room: contract.room.number,
         period: monthLabel,
         amount,
-        bankName: 'ธนาคารไทยพาณิชย์',
-        accountName: 'นาง สุนีย์ วงษ์จะบก',
-        accountNo: '800-253388-7',
+        bankName: '',
+        accountName: '',
+        accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
       });
       await this.pushFlex(userId, flex);
       return null;
@@ -3930,13 +3932,14 @@ export class LineService implements OnModuleInit {
 
       const monthLabel = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
       const amount = Number(invoice.totalAmount).toLocaleString();
+      const config = await this.settingsService.getDormConfig();
       const flex = this.buildPayInfoFlex({
         room: contract.room.number,
         period: monthLabel,
         amount,
-        bankName: 'ธนาคารไทยพาณิชย์',
-        accountName: 'นาง สุนีย์ วงษ์จะบก',
-        accountNo: '800-253388-7',
+        bankName: '',
+        accountName: '',
+        accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
       });
       await this.replyFlex(event.replyToken, flex);
       if (userId) {
@@ -5234,13 +5237,17 @@ export class LineService implements OnModuleInit {
         layout: 'vertical',
         spacing: 'xs',
         contents: [
-          {
+          data.bankName && {
             type: 'text',
             text: data.bankName,
             color: '#e84e40',
             weight: 'bold',
           },
-          { type: 'text', text: data.accountName, color: '#e84e40' },
+          data.accountName && {
+            type: 'text',
+            text: data.accountName,
+            color: '#e84e40',
+          },
           {
             type: 'text',
             text: data.accountNo,
@@ -5251,7 +5258,7 @@ export class LineService implements OnModuleInit {
               clipboardText: data.accountNo,
             },
           },
-        ],
+        ].filter(Boolean),
       },
       {
         type: 'text',
