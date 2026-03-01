@@ -38,12 +38,31 @@ export class TenantsService {
   }
 
   findAll(includeHistory: boolean = false) {
+    // If includeHistory is true, we want ALL tenants (including those with only inactive contracts)
+    // If includeHistory is false, we want only tenants with at least one active contract
+    
+    // However, the previous implementation was filtering contracts, not tenants.
+    // "where: includeHistory ? undefined : { isActive: true }" inside contracts include 
+    // means "fetch tenant, and include their contracts (only active ones if flag is false)".
+    
+    // To support "Former Tenants" page which presumably calls this with includeHistory=true (or a different flag?),
+    // we need to make sure we return tenants who HAVE contracts but ALL are inactive.
+    
     return this.prisma.tenant
       .findMany({
         orderBy: { name: 'asc' },
+        where: includeHistory ? undefined : {
+          contracts: {
+            some: { isActive: true }
+          }
+        },
         include: {
           contracts: {
-            where: includeHistory ? undefined : { isActive: true },
+            // When including history, we want ALL contracts. 
+            // When not, we usually want only active ones? 
+            // Actually, usually fetching a tenant should show their contract history anyway if we click details.
+            // But the list view usually filters tenants.
+            // Let's keep fetching all contracts for the tenant so we can see history.
             include: {
               room: true,
               invoices: {
