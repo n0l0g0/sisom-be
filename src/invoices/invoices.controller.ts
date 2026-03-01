@@ -49,6 +49,14 @@ export class InvoicesController {
     return this.invoicesService.findAll();
   }
 
+  @Post('fetch-by-ids')
+  fetchByIds(@Body() body: { ids: string[] }) {
+    if (!body.ids || !Array.isArray(body.ids)) {
+      return [];
+    }
+    return this.invoicesService.findByIds(body.ids);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.invoicesService.findOne(id);

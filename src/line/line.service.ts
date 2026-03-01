@@ -706,7 +706,7 @@ export class LineService implements OnModuleInit {
     if (!maintenance || !maintenance.room) return;
     const room = maintenance.room;
     const buildingName = room.building?.name || room.building?.code || '-';
-    const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
+    const locationLine = ` ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const descText = maintenance.description || '';
     const bodyLines = ['มีรายการแจ้งซ่อมใหม่', locationLine, descText].filter(
       (v) => v && v.trim().length > 0,
@@ -752,7 +752,7 @@ export class LineService implements OnModuleInit {
     if (!maintenance || !maintenance.room) return;
     const room = maintenance.room;
     const buildingName = room.building?.name || room.building?.code || '-';
-    const locationLine = `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
+    const locationLine = ` ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     const tenantName = room.contracts?.[0]?.tenant?.name || '';
     const phone = room.contracts?.[0]?.tenant?.phone || '';
     const lines = (maintenance.description || '')
@@ -1028,7 +1028,7 @@ export class LineService implements OnModuleInit {
 
     const buildingName = room.building?.name || room.building?.code || '';
     const locationLine = buildingName
-      ? `ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`
+      ? ` ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`
       : `ห้อง ${room.number}`;
     const title = maintenance.title || 'แจ้งซ่อม';
     const descFirstLine = (maintenance.description || '')
@@ -4540,7 +4540,7 @@ export class LineService implements OnModuleInit {
               },
               {
                 type: 'text',
-                text: `ตึก ${room?.building?.name || room?.building?.code || '-'}`,
+                text: ` ${room?.building?.name || room?.building?.code || '-'}`,
                 size: 'sm',
                 color: '#666666',
               },
@@ -5334,7 +5334,7 @@ export class LineService implements OnModuleInit {
           contents: [
             {
               type: 'text',
-              text: `ตึก ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`,
+              text: ` ${buildingLabel} ชั้น ${floor} ห้อง ${roomNo}`,
               size: 'sm',
               color: '#666666',
             },
@@ -6076,7 +6076,7 @@ export class LineService implements OnModuleInit {
     const lines = list.map((req) => {
       const room = req.room;
       const buildingName = room.building?.name || room.building?.code || '-';
-      return `- ตึก ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
+      return `-  ${buildingName} ชั้น ${room.floor} ห้อง ${room.number}`;
     });
     const msg = [`แจ้งเตือนห้องที่จะย้ายออกในวันที่ ${target}`, ...lines].join(
       '\n',
@@ -6620,7 +6620,7 @@ export class LineService implements OnModuleInit {
     {
       const roomLine =
         data.buildingLabel && data.buildingLabel.trim()
-          ? `ตึก ${data.buildingLabel.trim()} ห้อง ${data.room}`
+          ? ` ${data.buildingLabel.trim()} ห้อง ${data.room}`
           : `ห้อง ${data.room}`;
       rows.push({
         type: 'text',
