@@ -437,11 +437,29 @@ export class InvoicesService implements OnModuleInit {
         where: { id },
         include: {
           contract: {
-            include: { tenant: true },
+            include: {
+              tenant: true,
+              room: { include: { building: true } },
+            },
           },
         },
       });
       const tenant = full?.contract?.tenant;
+      if (method === 'CASH' && full?.contract?.room) {
+        // Notify staff about cash payment
+        const room = full.contract.room;
+        const buildingName = room.building?.name || room.building?.code || '';
+        const monthLabel = new Date(full.year, full.month - 1).toLocaleDateString(
+          'th-TH',
+          { month: 'long', year: 'numeric' },
+        );
+        await this.lineService.notifyStaffPaymentVerified({
+          room: room.number,
+          buildingLabel: buildingName,
+          amount: Number(full.totalAmount),
+          month: monthLabel,
+        });
+      }
       if (tenant?.lineUserId && method === 'DEPOSIT') {
         const contract = await this.prisma.contract.findUnique({
           where: { id: invoice.contractId },

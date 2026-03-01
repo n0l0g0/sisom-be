@@ -736,7 +736,7 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  private async notifyStaffPaymentVerified(data: {
+  async notifyStaffPaymentVerified(data: {
     room: string;
     buildingLabel?: string;
     amount: number;
