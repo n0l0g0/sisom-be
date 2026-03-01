@@ -5479,6 +5479,14 @@ export class LineService implements OnModuleInit {
       );
     }
 
+    // Require explicit payment context for tenants
+    if (!ctxInvoiceId && !isStaff) {
+      return this.replyText(
+        event.replyToken,
+        'กรุณากดเมนู "ตรวจสอบยอดชำระ" ก่อนส่งสลิปครับ',
+      );
+    }
+
     let contract: Prisma.ContractGetPayload<{
       include: { room: { include: { building: true } } };
     }> | null = null;
