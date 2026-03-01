@@ -111,34 +111,32 @@ export class RoomsService {
   }
 
   async getRoomContacts(roomId: string) {
-    const store = this.readContactsStore() || {};
-    const list = store[roomId] || [];
-    if (list.length > 0) {
-      return list;
-    }
-
-    const contract = await this.prisma.contract.findFirst({
-      where: { roomId, isActive: true },
-      include: { tenant: true },
+    const contacts = await this.prisma.roomContact.findMany({
+      where: { roomId },
+      orderBy: { createdAt: 'desc' },
     });
-    const tenant = contract?.tenant;
-    if (!tenant || !tenant.phone) {
-      return [];
+    
+    // If no contacts found, try to sync from active contract (migration logic)
+    if (contacts.length === 0) {
+      const contract = await this.prisma.contract.findFirst({
+        where: { roomId, isActive: true },
+        include: { tenant: true },
+      });
+      
+      if (contract?.tenant?.phone) {
+        const newContact = await this.prisma.roomContact.create({
+          data: {
+            roomId,
+            name: contract.tenant.name || contract.tenant.phone,
+            phone: contract.tenant.phone,
+            lineUserId: contract.tenant.lineUserId || null,
+          },
+        });
+        return [newContact];
+      }
     }
-
-    const now = new Date().toISOString();
-    const contact: RoomContact = {
-      id: randomUUID(),
-      name: tenant.name || tenant.phone,
-      phone: tenant.phone,
-      lineUserId: tenant.lineUserId || undefined,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const next = [contact];
-    store[roomId] = next;
-    this.writeContactsStore(store);
-    return next;
+    
+    return contacts;
   }
 
   async addRoomContact(
@@ -147,7 +145,6 @@ export class RoomsService {
   ) {
     const room = await this.prisma.room.findUnique({
       where: { id: roomId },
-      select: { id: true },
     });
     if (!room) {
       throw new NotFoundException('room not found');
@@ -156,49 +153,41 @@ export class RoomsService {
     if (!phone) {
       throw new BadRequestException('phone is required');
     }
-    const name = (body.name || '').trim() || phone;
-    const store = this.readContactsStore() || {};
-    const current = store[roomId] || [];
-    if (current.some((c) => c.phone === phone)) {
+    
+    const existing = await this.prisma.roomContact.findFirst({
+      where: { roomId, phone },
+    });
+    
+    if (existing) {
       throw new ConflictException('phone already exists for this room');
     }
-    const now = new Date().toISOString();
-    const next: RoomContact[] = [
-      ...current,
-      {
-        id: randomUUID(),
+
+    const name = (body.name || '').trim() || phone;
+    
+    await this.prisma.roomContact.create({
+      data: {
+        roomId,
         name,
         phone,
-        lineUserId: undefined,
-        createdAt: now,
-        updatedAt: now,
       },
-    ];
-    store[roomId] = next;
-    this.writeContactsStore(store);
-    return next;
+    });
+
+    return this.getRoomContacts(roomId);
   }
 
-  clearRoomContactLine(roomId: string, contactId: string) {
-    const store = this.readContactsStore() || {};
-    const current = store[roomId] || [];
-    const next = current.map((c) =>
-      c.id === contactId
-        ? { ...c, lineUserId: undefined, updatedAt: new Date().toISOString() }
-        : c,
-    );
-    store[roomId] = next;
-    this.writeContactsStore(store);
-    return next;
+  async clearRoomContactLine(roomId: string, contactId: string) {
+    await this.prisma.roomContact.update({
+      where: { id: contactId },
+      data: { lineUserId: null },
+    });
+    return this.getRoomContacts(roomId);
   }
 
-  deleteRoomContact(roomId: string, contactId: string) {
-    const store = this.readContactsStore() || {};
-    const current = store[roomId] || [];
-    const next = current.filter((c) => c.id !== contactId);
-    store[roomId] = next;
-    this.writeContactsStore(store);
-    return next;
+  async deleteRoomContact(roomId: string, contactId: string) {
+    await this.prisma.roomContact.delete({
+      where: { id: contactId },
+    });
+    return this.getRoomContacts(roomId);
   }
 
   async create(createRoomDto: CreateRoomDto) {
