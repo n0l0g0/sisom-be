@@ -392,23 +392,37 @@ export class InvoicesService implements OnModuleInit {
         data: { status: InvoiceStatus.PAID },
       });
     }
+    let paymentAmount = amount;
     if (method === 'DEPOSIT') {
       const currentDeposit = Math.max(
         0,
         Number(invoice.contract?.deposit ?? 0),
       );
-      if (currentDeposit < amount) {
-        throw new BadRequestException('Insufficient deposit to settle invoice');
+      // For DEPOSIT settlement, we only deduct water + electric + other fees
+      // We do NOT deduct Rent from deposit (as per business requirement)
+      const deductibleAmount = this.round(
+        Number(invoice.waterAmount) +
+          Number(invoice.electricAmount) +
+          Number(invoice.otherFees || 0),
+      );
+
+      if (currentDeposit < deductibleAmount) {
+        throw new BadRequestException(
+          `Insufficient deposit to settle invoice (Required: ${deductibleAmount}, Available: ${currentDeposit})`,
+        );
       }
       await this.prisma.contract.update({
         where: { id: invoice.contractId },
-        data: { deposit: this.round(Math.max(0, currentDeposit - amount)) },
+        data: {
+          deposit: this.round(Math.max(0, currentDeposit - deductibleAmount)),
+        },
       });
+      paymentAmount = deductibleAmount;
     }
     await this.prisma.payment.create({
       data: {
         invoiceId: id,
-        amount,
+        amount: paymentAmount,
         slipBankRef: method,
         status: PaymentStatus.VERIFIED,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
