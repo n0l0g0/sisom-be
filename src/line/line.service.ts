@@ -1168,45 +1168,37 @@ export class LineService implements OnModuleInit {
   ) {
     try {
       this.logger.log(`handlePhoneRegistration: variants=${JSON.stringify(variants)} userId=${userId}`);
-      const contactMatch = this.findRoomContactByPhones(variants);
+      const contactMatch = await this.findRoomContactByPhones(variants);
       if (contactMatch && userId) {
-        const store = this.readRoomContactsStore() || {};
-        const list = store[contactMatch.roomId] || [];
-        const idx = list.findIndex((c) => c.id === contactMatch.contact.id);
-        if (idx >= 0) {
-          const existing = list[idx];
-          if (existing.lineUserId) {
-            if (existing.lineUserId === userId) {
-              return this.replyText(
-                replyToken,
-                'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
-              );
-            }
+        const { roomId, contact: existing } = contactMatch;
+        if (existing.lineUserId) {
+          if (existing.lineUserId === userId) {
             return this.replyText(
               replyToken,
-              'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
+              'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
             );
-          }
-          const now = new Date().toISOString();
-          const updated: RoomContact = {
-            ...existing,
-            lineUserId: userId,
-            updatedAt: now,
-          };
-          const nextList = [...list];
-          nextList[idx] = updated;
-          store[contactMatch.roomId] = nextList;
-          this.writeRoomContactsStore(store);
-          if (this.isStaffUser(userId)) {
-            await this.linkMenuForUser(userId, 'ADMIN');
-          } else {
-            await this.linkMenuForUser(userId, 'TENANT');
           }
           return this.replyText(
             replyToken,
-            `เชื่อมบัญชี LINE กับห้องพักเรียบร้อยแล้ว (${updated.name || updated.phone})`,
+            'เบอร์นี้ถูกใช้เชื่อมกับ LINE บัญชีอื่นแล้ว หากต้องการเปลี่ยน กรุณาติดต่อผู้ดูแล',
           );
         }
+
+        // Update DB
+        const updated = await this.prisma.roomContact.update({
+          where: { id: existing.id },
+          data: { lineUserId: userId },
+        });
+
+        if (this.isStaffUser(userId)) {
+          await this.linkMenuForUser(userId, 'ADMIN');
+        } else {
+          await this.linkMenuForUser(userId, 'TENANT');
+        }
+        return this.replyText(
+          replyToken,
+          `เชื่อมบัญชี LINE กับห้องพักเรียบร้อยแล้ว (${updated.name || updated.phone})`,
+        );
       }
 
       const tenant = await this.prisma.tenant.findFirst({
@@ -1273,76 +1265,55 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  private getRoomContactsFilePath() {
-    const uploadsDir = resolve('/app/uploads');
-    if (!existsSync(uploadsDir)) {
-      try {
-        mkdirSync(uploadsDir, { recursive: true });
-      } catch (e) {
-        this.logger.warn(
-          `ensure room-contacts dir failed: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
-      }
+  private async findRoomContactByPhones(variants: string[]) {
+    this.logger.log(`findRoomContactByPhones: variants=${JSON.stringify(variants)}`);
+    // Find all contacts that match any of the phone variants
+    // Since phone in DB might have formatting, we might need to normalize or fetch all and filter in memory if volume is small?
+    // Or just exact match? The current DB stores formatted phones?
+    // Let's assume exact match for now, or fetch potential matches.
+    // Actually, Prisma doesn't support regex easily.
+    // Let's fetch all room contacts and filter in memory for now (assuming < 1000 contacts).
+    // Or better, fetch by `OR` condition if variants are clean.
+    
+    // The variants are usually normalized (digits only) or formatted.
+    // Let's try to match exact phone strings first.
+    const contacts = await this.prisma.roomContact.findMany({
+      where: {
+        phone: { in: variants },
+      },
+    });
+    
+    if (contacts.length > 0) {
+       const c = contacts[0];
+       return { roomId: c.roomId, contact: c };
     }
-    return join(uploadsDir, 'room-contacts.json');
-  }
 
-  private readRoomContactsStore(): Record<string, RoomContact[]> | null {
-    try {
-      const p = this.getRoomContactsFilePath();
-      if (!existsSync(p)) return {};
-      const raw = readFileSync(p, 'utf8');
-      if (!raw.trim()) return {};
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== 'object') return {};
-      return parsed as Record<string, RoomContact[]>;
-    } catch {
-      return {};
-    }
-  }
-
-  private writeRoomContactsStore(store: Record<string, RoomContact[]>) {
-    try {
-      const p = this.getRoomContactsFilePath();
-      writeFileSync(p, JSON.stringify(store, null, 2), 'utf8');
-    } catch (e) {
-      this.logger.warn(
-        `write room-contacts failed: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
-  }
-
-  private findRoomContactByPhones(variants: string[]) {
-    const store = this.readRoomContactsStore() || {};
-    this.logger.log(`findRoomContactByPhones: variants=${JSON.stringify(variants)}, storeKeys=${Object.keys(store).length}`);
-    for (const [roomId, list] of Object.entries(store)) {
-      for (const c of list) {
+    // Fallback: if no exact match, maybe fetch all and normalize?
+    // Given the previous implementation did regex replacement, we should probably replicate that if needed.
+    // But let's assume phone numbers in DB are stored consistently.
+    // If not, we might need to fetch all contacts and check.
+    
+    // Let's try to fetch all contacts if no direct match found
+    const allContacts = await this.prisma.roomContact.findMany();
+    for (const c of allContacts) {
         const cleanPhone = (c.phone || '').replace(/[^\d+]/g, '');
-        if (variants.includes(cleanPhone)) {
-          this.logger.log(`findRoomContactByPhones: match found roomId=${roomId} contact=${c.phone}`);
-          return { roomId, contact: c };
+        for (const v of variants) {
+            const cleanV = v.replace(/[^\d+]/g, '');
+            if (cleanPhone === cleanV) {
+                return { roomId: c.roomId, contact: c };
+            }
         }
-      }
     }
+
     return null;
   }
 
-  private findRoomContactsByLineUserId(userId: string) {
+  private async findRoomContactsByLineUserId(userId: string) {
     if (!userId) return [];
-    const store = this.readRoomContactsStore() || {};
-    const results: Array<{ roomId: string; contact: RoomContact }> = [];
-    for (const [roomId, list] of Object.entries(store)) {
-      for (const c of list || []) {
-        if (c.lineUserId === userId) {
-          results.push({ roomId, contact: c });
-        }
-      }
-    }
-    return results;
+    const contacts = await this.prisma.roomContact.findMany({
+      where: { lineUserId: userId },
+    });
+    return contacts.map(c => ({ roomId: c.roomId, contact: c }));
   }
 
   constructor(
@@ -1504,47 +1475,27 @@ export class LineService implements OnModuleInit {
       await this.linkMenuForUser(lineUserId, 'GENERAL');
       
       // Clear from RoomContacts by LineUserId
-      this.removeRoomContactByLineUserId(lineUserId);
+      await this.removeRoomContactByLineUserId(lineUserId);
     }
 
     if (tenant.phone) {
       // Clear from RoomContacts by Phone
-      this.removeRoomContactByPhone(tenant.phone);
+      await this.removeRoomContactByPhone(tenant.phone);
     }
   }
 
-  private removeRoomContactByLineUserId(lineUserId: string) {
-    const store = this.readRoomContactsStore() || {};
-    let changed = false;
-    for (const [roomId, contacts] of Object.entries(store)) {
-      const filtered = contacts.filter((c) => c.lineUserId !== lineUserId);
-      if (filtered.length !== contacts.length) {
-        store[roomId] = filtered;
-        changed = true;
-      }
-    }
-    if (changed) {
-      this.writeRoomContactsStore(store);
-    }
+  private async removeRoomContactByLineUserId(lineUserId: string) {
+    await this.prisma.roomContact.updateMany({
+      where: { lineUserId },
+      data: { lineUserId: null },
+    });
   }
 
-  private removeRoomContactByPhone(phone: string) {
-    const store = this.readRoomContactsStore() || {};
-    let changed = false;
-    const cleanTarget = phone.replace(/\s|-/g, '');
-    for (const [roomId, contacts] of Object.entries(store)) {
-      const filtered = contacts.filter((c) => {
-        const cPhone = (c.phone || '').replace(/\s|-/g, '');
-        return cPhone !== cleanTarget;
-      });
-      if (filtered.length !== contacts.length) {
-        store[roomId] = filtered;
-        changed = true;
-      }
-    }
-    if (changed) {
-      this.writeRoomContactsStore(store);
-    }
+  private async removeRoomContactByPhone(phone: string) {
+    await this.prisma.roomContact.updateMany({
+      where: { phone },
+      data: { lineUserId: null },
+    });
   }
 
   async handleEvent(event: WebhookEvent) {
@@ -2335,7 +2286,7 @@ export class LineService implements OnModuleInit {
       const tenant = await this.prisma.tenant.findFirst({
         where: { lineUserId: userId },
       });
-      const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
+      const contactMatches = (await this.findRoomContactsByLineUserId(userId)) || [];
       let contract: ContractWithRoomTenant | null = null;
       if (tenant) {
         contract = await this.prisma.contract.findFirst({
@@ -2364,7 +2315,8 @@ export class LineService implements OnModuleInit {
         tenantName:
           contract.tenant?.name ||
           tenant?.name ||
-          contactMatches[0]?.contact?.name,
+          contactMatches[0]?.contact?.name ||
+          undefined,
         phone:
           contract.tenant?.phone ||
           tenant?.phone ||
@@ -2826,15 +2778,12 @@ export class LineService implements OnModuleInit {
         );
       }
       if (userId) {
-        const store = this.readRoomContactsStore() || {};
-        for (const list of Object.values(store)) {
-          const found = (list || []).find((c) => c.lineUserId === userId);
-          if (found) {
-            return this.replyText(
-              event.replyToken,
-              'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
-            );
-          }
+        const found = await this.findRoomContactsByLineUserId(userId);
+        if (found.length > 0) {
+          return this.replyText(
+            event.replyToken,
+            'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+          );
         }
         const tenant = await this.prisma.tenant.findFirst({
           where: { lineUserId: userId },
@@ -2968,7 +2917,7 @@ export class LineService implements OnModuleInit {
       const tenant = await this.prisma.tenant.findFirst({
         where: { lineUserId: userId },
       });
-      const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
+      const contactMatches = (await this.findRoomContactsByLineUserId(userId)) || [];
       let contract: ContractWithRoomTenant | null = null;
       if (tenant) {
         contract = await this.prisma.contract.findFirst({
@@ -2997,7 +2946,8 @@ export class LineService implements OnModuleInit {
         tenantName:
           contract.tenant?.name ||
           tenant?.name ||
-          contactMatches[0]?.contact?.name,
+          contactMatches[0]?.contact?.name ||
+          undefined,
         phone:
           contract.tenant?.phone ||
           tenant?.phone ||
@@ -3673,7 +3623,7 @@ export class LineService implements OnModuleInit {
       }
 
       // Even if not in context, attempt direct registration when phone exists
-      const contactMatch = this.findRoomContactByPhones(variants);
+      const contactMatch = await this.findRoomContactByPhones(variants);
       const tenant = await this.prisma.tenant.findFirst({
         where: { OR: variants.map((p) => ({ phone: p })) },
       });
@@ -3898,7 +3848,7 @@ export class LineService implements OnModuleInit {
         contracts.push(...tenantContracts);
       }
 
-      const contactMatches = this.findRoomContactsByLineUserId(userId);
+      const contactMatches = await this.findRoomContactsByLineUserId(userId);
       if (contactMatches.length > 0) {
         const roomIds = Array.from(
           new Set(contactMatches.map((m) => m.roomId)),
@@ -4015,7 +3965,7 @@ export class LineService implements OnModuleInit {
         });
         contracts.push(...tenantContracts);
       }
-      const contactMatches = this.findRoomContactsByLineUserId(userId);
+      const contactMatches = await this.findRoomContactsByLineUserId(userId);
       if (contactMatches.length > 0) {
         const roomIds = Array.from(
           new Set(contactMatches.map((m) => m.roomId)),
@@ -5483,7 +5433,7 @@ export class LineService implements OnModuleInit {
       where: { lineUserId: userId },
     });
     const isStaff = this.isStaffUser(userId);
-    const contactMatches = this.findRoomContactsByLineUserId(userId) || [];
+    const contactMatches = (await this.findRoomContactsByLineUserId(userId)) || [];
 
     if (!tenant && !isStaff && !ctxInvoiceId && contactMatches.length === 0) {
       return this.replyText(
