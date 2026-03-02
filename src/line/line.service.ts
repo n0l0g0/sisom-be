@@ -4064,6 +4064,19 @@ export class LineService implements OnModuleInit {
           'ไม่พบยอดค้างชำระสำหรับห้องของคุณ',
         );
       }
+
+      if (userId && unpaidInvoices.length > 0) {
+        const sorted = [...unpaidInvoices].sort((a, b) => {
+          const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return tb - ta;
+        });
+        const latest = sorted[0];
+        if (latest) {
+          this.setPaymentContextWithTimeout(userId, latest.id);
+        }
+      }
+
       const carousel = this.buildUnpaidCarousel(unpaidInvoices);
       await this.replyFlex(event.replyToken, carousel);
       return null;
