@@ -5944,12 +5944,23 @@ export class LineService implements OnModuleInit {
             slipUrl,
             type,
           });
+          // End staff payment flow immediately on successful cutoff
+          if (isStaff && userId) {
+            try {
+              this.clearStaffPaymentTimer(userId || '');
+              this.staffPaymentState.delete(userId || '');
+            } catch {}
+          }
         } catch (e) {
           this.logger.warn(
             `Failed to reply flex: ${e instanceof Error ? e.message : String(e)}`,
           );
           try {
             await this.replyText(event.replyToken, 'ตัดยอดเรียบร้อยแล้วครับ');
+            if (isStaff && userId) {
+              this.clearStaffPaymentTimer(userId || '');
+              this.staffPaymentState.delete(userId || '');
+            }
           } catch {}
         }
       }

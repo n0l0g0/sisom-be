@@ -300,6 +300,17 @@ export class RoomsService {
               createdAt: true,
             },
           },
+          meterReplacements: {
+            orderBy: { replacedAt: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              type: true,
+              oldMeterFinalReading: true,
+              newMeterStartReading: true,
+              replacedAt: true,
+            },
+          },
           maintenanceRequests: {
             where: { OR: [{ status: 'PENDING' }, { status: 'IN_PROGRESS' }] },
             orderBy: { createdAt: 'desc' },
