@@ -4207,9 +4207,7 @@ export class LineService implements OnModuleInit {
         return null;
       }
       this.startCooldown(userId, 'ASK_ACCOUNT', 10000);
-      const dorm = await this.prisma.dormConfig.findFirst({
-        orderBy: { updatedAt: 'desc' },
-      });
+      const dorm = await this.settingsService.getDormConfig();
       const bankAccountRaw = (dorm?.bankAccount || '').trim();
 
       if (!bankAccountRaw) {
@@ -4437,28 +4435,15 @@ export class LineService implements OnModuleInit {
     }
 
     if (text.includes('ติดต่อสอบถาม')) {
-      const dorm = await this.prisma.dormConfig.findFirst({
-        orderBy: { updatedAt: 'desc' },
-      });
+      const dorm = await this.settingsService.getDormConfig();
+      const extra = this.settingsService.getDormExtra();
       const logoUrl = this.getDormLogoUrl();
       const base =
         process.env.PUBLIC_API_URL || process.env.INTERNAL_API_URL || '';
-      const extra = (() => {
-        try {
-          const uploadsDir = resolve('/app/uploads');
-          const p = join(uploadsDir, 'dorm-extra.json');
-          if (!existsSync(p)) return {};
-          const raw = readFileSync(p, 'utf8');
-          const parsed = JSON.parse(raw);
-          const mapUrl =
-            typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined;
-          return { mapUrl };
-        } catch {
-          return {};
-        }
-      })() as { mapUrl?: string };
+      
       const name = dorm?.dormName || 'หอพัก';
       const phone = dorm?.phone || '';
+      const address = dorm?.address || '';
       const phoneDigits = phone.replace(/[^\d+]/g, '');
       const telUri = phoneDigits ? `tel:${phoneDigits}` : undefined;
       const mapUri = extra.mapUrl;
@@ -4476,6 +4461,16 @@ export class LineService implements OnModuleInit {
           wrap: true,
         },
       ];
+      if (address) {
+        bodyContents.push({
+          type: 'text',
+          text: address,
+          size: 'md',
+          margin: 'md',
+          wrap: true,
+          color: '#666666',
+        });
+      }
       if (phone) {
         bodyContents.push({
           type: 'text',
@@ -6509,7 +6504,7 @@ export class LineService implements OnModuleInit {
           bounds: { x: 45, y: 891, width: 743, height: 755 },
           action: {
             type: 'message',
-            text: '713 ตำบลหนองระเวียง อำเภอเมือง จังหวัดนครราชสีมา 30000',
+            text: 'ติดต่อสอบถาม',
           },
         },
         {
@@ -6518,7 +6513,7 @@ export class LineService implements OnModuleInit {
         },
         {
           bounds: { x: 1724, y: 908, width: 743, height: 726 },
-          action: { type: 'message', text: 'เบอร์ติดต่อ 092 426 9477' },
+          action: { type: 'message', text: 'ติดต่อสอบถาม' },
         },
       ],
     };
