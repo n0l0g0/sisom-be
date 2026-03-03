@@ -84,10 +84,19 @@ type MaintenanceWithRoomContracts = Prisma.MaintenanceRequestGetPayload<{
 
 @Injectable()
 export class LineService implements OnModuleInit {
-  private client: messagingApi.MessagingApiClient;
-  private blobClient: messagingApi.MessagingApiBlobClient | undefined;
+  private _client: messagingApi.MessagingApiClient;
+  private _blobClient: messagingApi.MessagingApiBlobClient | undefined;
+
+  private get client(): messagingApi.MessagingApiClient {
+    return this.getClient();
+  }
+
+  private get blobClient(): messagingApi.MessagingApiBlobClient | undefined {
+    return this.getBlobClient();
+  }
+
+  private currentAccessToken: string | undefined;
   private readonly logger = new Logger(LineService.name);
-  private readonly channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   private readonly richMenuGeneralId =
     process.env.LINE_RICHMENU_GENERAL_ID || '';
   private readonly richMenuTenantId = process.env.LINE_RICHMENU_TENANT_ID || '';
@@ -437,11 +446,12 @@ export class LineService implements OnModuleInit {
     let sentOfficial: number | undefined;
     let limitOfficial: number | undefined;
     try {
-      if (this.channelAccessToken) {
+      const token = this.getChannelAccessToken();
+      if (token) {
         const quotaRes = await fetch(
           'https://api.line.me/v2/bot/message/quota',
           {
-            headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+            headers: { Authorization: `Bearer ${token}` },
           },
         );
         if (quotaRes.ok) {
@@ -457,7 +467,7 @@ export class LineService implements OnModuleInit {
         }
         const consRes = await fetch(
           'https://api.line.me/v2/bot/message/quota/consumption',
-          { headers: { Authorization: `Bearer ${this.channelAccessToken}` } },
+          { headers: { Authorization: `Bearer ${token}` } },
         );
         if (consRes.ok) {
           const c = (await consRes.json()) as { totalUsage?: number };
@@ -1365,16 +1375,55 @@ export class LineService implements OnModuleInit {
     private slipOk: SlipOkService,
     private settingsService: SettingsService,
   ) {
-    if (this.channelAccessToken) {
-      this.client = new messagingApi.MessagingApiClient({
-        channelAccessToken: this.channelAccessToken,
+    this.refreshClients();
+  }
+
+  private getChannelAccessToken(): string | undefined {
+    const extra = this.settingsService.getDormExtra();
+    return (
+      extra.lineOaChannelAccessToken || process.env.LINE_CHANNEL_ACCESS_TOKEN
+    );
+  }
+
+  private refreshClients() {
+    const token = this.getChannelAccessToken();
+    if (token && token !== this.currentAccessToken) {
+      this.currentAccessToken = token;
+      this._client = new messagingApi.MessagingApiClient({
+        channelAccessToken: token,
       });
-      this.blobClient = new messagingApi.MessagingApiBlobClient({
-        channelAccessToken: this.channelAccessToken,
+      this._blobClient = new messagingApi.MessagingApiBlobClient({
+        channelAccessToken: token,
       });
-    } else {
-      this.logger.warn('LINE_CHANNEL_ACCESS_TOKEN is not set');
+    } else if (!this._client && token) {
+      this.currentAccessToken = token;
+      this._client = new messagingApi.MessagingApiClient({
+        channelAccessToken: token,
+      });
+      this._blobClient = new messagingApi.MessagingApiBlobClient({
+        channelAccessToken: token,
+      });
     }
+  }
+
+  private getClient(): messagingApi.MessagingApiClient {
+    this.refreshClients();
+    if (!this._client) {
+      const token = this.getChannelAccessToken() || '';
+      return new messagingApi.MessagingApiClient({ channelAccessToken: token });
+    }
+    return this._client;
+  }
+
+  private getBlobClient(): messagingApi.MessagingApiBlobClient {
+    this.refreshClients();
+    if (!this._blobClient) {
+      const token = this.getChannelAccessToken() || '';
+      return new messagingApi.MessagingApiBlobClient({
+        channelAccessToken: token,
+      });
+    }
+    return this._blobClient;
   }
 
   async onModuleInit() {
@@ -2160,18 +2209,24 @@ export class LineService implements OnModuleInit {
 
     if (event.message.type === 'image') {
       const uid = (event as LineImageEvent).source.userId || '';
-      if (uid) {
-        this.addRecentChat({ userId: uid, type: 'received_image' });
-      }
+      let imgUrl: string | null = null;
+
       const mo = this.moveoutState.get(uid);
       if (mo?.step) {
-        return this.handleMoveOutImage(event as LineImageEvent);
+        imgUrl = await this.handleMoveOutImage(event as LineImageEvent);
+      } else {
+        const maint = this.tenantMaintenanceState.get(uid);
+        if (maint?.step === 'WAIT_IMAGES') {
+          imgUrl = await this.handleMaintenanceImage(event as LineImageEvent);
+        } else {
+          imgUrl = await this.handleSlipImage(event as LineImageEvent);
+        }
       }
-      const maint = this.tenantMaintenanceState.get(uid);
-      if (maint?.step === 'WAIT_IMAGES') {
-        return this.handleMaintenanceImage(event as LineImageEvent);
+
+      if (uid) {
+        this.addRecentChat({ userId: uid, type: 'received_image', text: imgUrl || undefined });
       }
-      return this.handleSlipImage(event as LineImageEvent);
+      return null;
     }
 
     if (event.message.type !== 'text') {
@@ -4494,14 +4549,15 @@ export class LineService implements OnModuleInit {
     return;
   }
 
-  private async handleMoveOutImage(event: LineImageEvent) {
+  private async handleMoveOutImage(event: LineImageEvent): Promise<string | null> {
     const userId = event.source.userId || '';
     const state = this.moveoutState.get(userId);
     if (!state?.roomId || !state.step) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'กรุณาเลือกตึก/ชั้น/ห้องสำหรับย้ายออกก่อน',
       );
+      return null;
     }
     this.clearMoveoutTimer(userId);
     // Save image similar to slip
@@ -4511,7 +4567,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
       });
       if (!res.ok)
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -4546,10 +4602,11 @@ export class LineService implements OnModuleInit {
       );
     }
     if (!imgUrl) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'ระบบไม่สามารถบันทึกรูปได้ กรุณาส่งใหม่อีกครั้ง',
       );
+      return null;
     }
     if (state.step === 'WATER') {
       this.moveoutState.set(userId, {
@@ -4562,7 +4619,7 @@ export class LineService implements OnModuleInit {
         'รับรูปมิเตอร์น้ำแล้ว กรุณาส่งรูปมิเตอร์ไฟ',
       );
       this.startMoveoutTimer(userId);
-      return;
+      return imgUrl;
     }
     if (state.step === 'ELECTRIC') {
       const next = { ...state, electricImageUrl: imgUrl };
@@ -4665,19 +4722,21 @@ export class LineService implements OnModuleInit {
         event.replyToken,
         'บันทึกรูปมิเตอร์น้ำ/ไฟ เรียบร้อย',
       );
-      return;
+      return imgUrl;
     }
-    return this.replyText(event.replyToken, 'ขั้นตอนไม่ถูกต้อง กรุณาเริ่มใหม่');
+    await this.replyText(event.replyToken, 'ขั้นตอนไม่ถูกต้อง กรุณาเริ่มใหม่');
+    return null;
   }
 
-  private async handleMaintenanceImage(event: LineImageEvent) {
+  private async handleMaintenanceImage(event: LineImageEvent): Promise<string | null> {
     const userId = event.source.userId || '';
     const state = this.tenantMaintenanceState.get(userId);
     if (!state || state.step !== 'WAIT_IMAGES' || !state.roomId) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'กรุณาเริ่มคำสั่ง แจ้งซ่อม ก่อนส่งรูป',
       );
+      return null;
     }
     this.clearTenantMaintenanceTimer(userId);
     const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
@@ -4686,7 +4745,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
       });
       if (!res.ok)
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -4724,10 +4783,11 @@ export class LineService implements OnModuleInit {
     }
     if (!imgUrl) {
       this.startTenantMaintenanceTimer(userId);
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'ระบบไม่สามารถบันทึกรูปได้ กรุณาส่งใหม่อีกครั้ง',
       );
+      return null;
     }
     const currentImages = Array.isArray(state.images)
       ? state.images.slice()
@@ -4743,6 +4803,7 @@ export class LineService implements OnModuleInit {
       event.replyToken,
       'บันทึกรูปแจ้งซ่อมแล้ว หากมีรูปเพิ่มเติมให้ส่งต่อได้เลย หากไม่มีให้พิมพ์ว่า เสร็จสิ้น',
     );
+    return imgUrl;
   }
 
   private phoneVariants(input: string): string[] {
@@ -5380,15 +5441,20 @@ export class LineService implements OnModuleInit {
       const floor = it.room?.floor ?? '-';
       const roomNo = it.room?.number ?? '-';
       const title = it.title || 'แจ้งซ่อม';
-      const desc = (it.description || '').slice(0, 120);
+      // Clean description to remove raw image URLs from text display
+      let desc = (it.description || '');
+      const imgUrl = this.extractImageUrl(desc);
+      if (imgUrl) {
+        // Remove the URL from the description text to avoid clutter
+        desc = desc.replace(imgUrl, '').trim();
+      }
+      desc = desc.slice(0, 120); // truncate if still too long
+      
       const created = new Date(it.createdAt).toLocaleString('th-TH', {
         timeZone: 'Asia/Bangkok',
       });
-      const img =
-        this.extractImageUrl(
-          typeof it.description === 'string' ? it.description : undefined,
-        ) ||
-        'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+      const img = imgUrl || 'https://img2.pic.in.th/imagef8d247a8c00bfa80.png';
+
       return {
         type: 'bubble',
         hero: {
@@ -5397,6 +5463,10 @@ export class LineService implements OnModuleInit {
           size: 'full',
           aspectRatio: '20:13',
           aspectMode: 'cover',
+          action: {
+              type: 'uri',
+              uri: img
+          }
         },
         body: {
           type: 'box',
@@ -5472,20 +5542,35 @@ export class LineService implements OnModuleInit {
 
   private extractImageUrl(text?: string): string | null {
     const raw = (text || '').trim();
-    const m = raw.match(/https?:\/\/\\S+/g);
+    // Improved regex to better capture URLs, handling query parameters and ignoring trailing punctuation if any
+    const m = raw.match(/https?:\/\/[^\s]+/g);
     if (!m || m.length === 0) return null;
-    const first = m[0];
-    if (/\.(png|jpg|jpeg|gif|webp)(\\?|$)/i.test(first)) return first;
-    return first;
+    
+    // Check all found URLs for image extensions
+    for (const url of m) {
+        // Clean trailing punctuation that might have been captured (like . or , at end of sentence)
+        const cleanUrl = url.replace(/[.,;)]$/, '');
+        if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/i.test(cleanUrl)) {
+            return cleanUrl;
+        }
+    }
+    
+    // Fallback: if no extension found but there is a URL, try the first one (might be an image served without extension)
+    // But for safety, let's just return the first match if it looks like our own media URL
+    const first = m[0].replace(/[.,;)]$/, '');
+    if (first.includes('/api/media/')) return first;
+    
+    return null;
   }
-  private async handleSlipImage(event: LineImageEvent) {
-    if (!this.client) return;
+  private async handleSlipImage(event: LineImageEvent): Promise<string | null> {
+    if (!this.client) return null;
     const userId = event.source.userId;
     if (!userId) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'กรุณาส่งสลิปในแชทส่วนตัวกับบอท เพื่อระบุตัวตนผู้เช่า',
       );
+      return null;
     }
     const mediaId = event.message.id;
     if (mediaId) {
@@ -5517,18 +5602,20 @@ export class LineService implements OnModuleInit {
     const contactMatches = (await this.findRoomContactsByLineUserId(userId)) || [];
 
     if (!tenant && !isStaff && !ctxInvoiceId && contactMatches.length === 0) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
       );
+      return null;
     }
 
     // Require explicit payment context for tenants
     if (!ctxInvoiceId && !isStaff) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'กรุณากดเมนู "ตรวจสอบยอดชำระ" ก่อนส่งสลิปครับ',
       );
+      return null;
     }
 
     let contract: Prisma.ContractGetPayload<{
@@ -5540,7 +5627,8 @@ export class LineService implements OnModuleInit {
         include: { room: { include: { building: true } } },
       });
       if (!contract) {
-        return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
+        await this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
+        return null;
       }
     } else if (!tenant && contactMatches.length > 0) {
       const roomIds = Array.from(new Set(contactMatches.map((m) => m.roomId)));
@@ -5652,10 +5740,11 @@ export class LineService implements OnModuleInit {
             include: { payments: true, contract: { include: { room: { include: { building: true } } } } },
           });
           if (!invoice) {
-            return this.replyText(
+            await this.replyText(
               event.replyToken,
               'กรุณาเลือกห้องที่จะรับชำระก่อน',
             );
+            return null;
           }
           this.setPaymentContextWithTimeout(userId, invoice.id);
         }
@@ -5670,7 +5759,7 @@ export class LineService implements OnModuleInit {
       try {
         const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
         const res = await fetch(apiUrl, {
-          headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+          headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
         });
         if (res.ok && res.body) {
           const stream = Readable.fromWeb(
@@ -5741,7 +5830,8 @@ export class LineService implements OnModuleInit {
         }
       }
       if (!invoice) {
-        return this.replyText(event.replyToken, 'ไม่พบใบแจ้งหนี้ที่ต้องชำระ');
+        await this.replyText(event.replyToken, 'ไม่พบใบแจ้งหนี้ที่ต้องชำระ');
+        return null;
       }
     }
 
@@ -5758,7 +5848,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.channelAccessToken}` },
+        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
       });
       if (!res.ok) {
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -5799,10 +5889,11 @@ export class LineService implements OnModuleInit {
     }
 
     if (!slipUrl) {
-      return this.replyText(
+      await this.replyText(
         event.replyToken,
         'ระบบไม่สามารถบันทึกสลิปได้ กรุณาส่งใหม่อีกครั้ง',
       );
+      return null;
     }
 
     const roomNum = invoice.contract?.room?.number || contract?.room?.number || '-';
@@ -5864,7 +5955,7 @@ export class LineService implements OnModuleInit {
         event.replyToken,
         `รับสลิปแล้ว ${displayRoom}\nระบบจะตรวจสอบโดยเจ้าหน้าที่และยืนยันผลให้ภายในเร็ว ๆ นี้`,
       );
-      return null;
+      return slipUrl;
     }
 
     // De-duplication: avoid creating duplicated payments
@@ -5924,7 +6015,7 @@ export class LineService implements OnModuleInit {
           period,
         });
         await this.replyFlex(event.replyToken, flex);
-        return null;
+        return slipUrl;
       }
     } catch (e) {
       this.logger.warn(
@@ -6123,7 +6214,7 @@ export class LineService implements OnModuleInit {
       }
     }
 
-    return null;
+    return slipUrl;
   }
 
   async pushMessage(userId: string, text: string, actor?: string) {

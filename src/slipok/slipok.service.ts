@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { readFile } from 'fs/promises';
+import { SettingsService } from '../settings/settings.service';
 
 type SlipOkResult = {
   ok: boolean;
@@ -54,14 +55,26 @@ const pickNumber = (
 
 @Injectable()
 export class SlipOkService {
+  constructor(private readonly settingsService: SettingsService) {}
   private readonly logger = new Logger(SlipOkService.name);
-  private readonly apiKey = process.env.SLIPOK_API_KEY;
-  private readonly checkUrl =
-    process.env.SLIPOK_CHECK_URL ||
-    'https://api.slipok.com/api/line/apikey/60698';
+
+  private getApiKey(): string | undefined {
+    const extra = this.settingsService.getDormExtra();
+    return extra.slipokApiKey || process.env.SLIPOK_API_KEY;
+  }
+
+  private getCheckUrl(): string {
+    const extra = this.settingsService.getDormExtra();
+    return (
+      extra.slipokApiUrl ||
+      process.env.SLIPOK_CHECK_URL ||
+      'https://api.slipok.com/api/line/apikey/60698'
+    );
+  }
 
   async verifyByUrl(url: string, amount?: number): Promise<SlipOkResult> {
-    if (!this.apiKey) {
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
       this.logger.warn('SLIPOK_API_KEY is not set');
       return { ok: false, message: 'missing api key' };
     }
@@ -70,10 +83,10 @@ export class SlipOkService {
       if (typeof amount === 'number') {
         payload.amount = amount;
       }
-      const res = await fetch(this.checkUrl, {
+      const res = await fetch(this.getCheckUrl(), {
         method: 'POST',
         headers: {
-          'x-authorization': this.apiKey,
+          'x-authorization': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ ...payload, log: true }),
@@ -160,7 +173,8 @@ export class SlipOkService {
   }
 
   async verifyByData(filePath: string, amount?: number): Promise<SlipOkResult> {
-    if (!this.apiKey) {
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
       this.logger.warn('SLIPOK_API_KEY is not set');
       return { ok: false, message: 'missing api key' };
     }
@@ -173,10 +187,10 @@ export class SlipOkService {
       if (typeof amount === 'number') {
         fd.append('amount', String(amount));
       }
-      const res = await fetch(this.checkUrl, {
+      const res = await fetch(this.getCheckUrl(), {
         method: 'POST',
         headers: {
-          'x-authorization': this.apiKey,
+          'x-authorization': apiKey,
         },
         body: fd,
       });

@@ -160,22 +160,70 @@ export class SettingsService {
   getDormExtra(): DormExtraDto {
     try {
       const p = this.getExtraFilePath();
-      if (!fs.existsSync(p)) return {};
+      // If file doesn't exist, try to create it with current ENV values
+      if (!fs.existsSync(p)) {
+         return {
+          lineOaChannelId: process.env.LINE_CHANNEL_ID,
+          lineOaChannelSecret: process.env.LINE_CHANNEL_SECRET,
+          lineOaChannelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+          slipokApiKey: process.env.SLIPOK_API_KEY,
+          slipokApiUrl: process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL,
+          slipokBranchId: process.env.SLIPOK_BRANCH_ID,
+         };
+      }
+      
       const raw = fs.readFileSync(p, 'utf8');
       const parsedUnknown = JSON.parse(raw) as unknown;
       const parsed = this.isRecord(parsedUnknown) ? parsedUnknown : {};
+      
+      // Prioritize JSON config, fallback to ENV only if JSON key is missing or undefined
+      // BUT if the user explicitly saves empty string, we might want to respect that?
+      // For now, let's assume we fallback to ENV if the value in JSON is missing.
+      // The requirement is "don't rely on env", so actually we should just return what's in JSON
+      // If JSON has it, use it. If not, use ENV as default.
+      
       return {
-        logoUrl:
-          typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
+        logoUrl: typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
         mapUrl: typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined,
-        lineLink:
-          typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
+        lineLink: typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
         monthlyDueDay: Number.isFinite(Number(parsed.monthlyDueDay))
           ? Number(parsed.monthlyDueDay)
           : undefined,
+        
+        // Connection Configs
+        lineOaChannelId: typeof parsed.lineOaChannelId === 'string' 
+          ? parsed.lineOaChannelId 
+          : process.env.LINE_CHANNEL_ID,
+          
+        lineOaChannelSecret: typeof parsed.lineOaChannelSecret === 'string'
+          ? parsed.lineOaChannelSecret
+          : process.env.LINE_CHANNEL_SECRET,
+          
+        lineOaChannelAccessToken: typeof parsed.lineOaChannelAccessToken === 'string'
+          ? parsed.lineOaChannelAccessToken
+          : process.env.LINE_CHANNEL_ACCESS_TOKEN,
+          
+        slipokApiKey: typeof parsed.slipokApiKey === 'string'
+          ? parsed.slipokApiKey
+          : process.env.SLIPOK_API_KEY,
+          
+        slipokApiUrl: typeof parsed.slipokApiUrl === 'string'
+          ? parsed.slipokApiUrl
+          : (process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL),
+          
+        slipokBranchId: typeof parsed.slipokBranchId === 'string'
+          ? parsed.slipokBranchId
+          : process.env.SLIPOK_BRANCH_ID,
       };
     } catch {
-      return {};
+      return {
+        lineOaChannelId: process.env.LINE_CHANNEL_ID,
+        lineOaChannelSecret: process.env.LINE_CHANNEL_SECRET,
+        lineOaChannelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+        slipokApiKey: process.env.SLIPOK_API_KEY,
+        slipokApiUrl: process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL,
+        slipokBranchId: process.env.SLIPOK_BRANCH_ID,
+      };
     }
   }
 
@@ -183,16 +231,31 @@ export class SettingsService {
     const p = this.getExtraFilePath();
     const current = this.getDormExtra();
     const next: DormExtraDto = {
+      ...current,
       logoUrl: data.logoUrl ?? current.logoUrl,
       mapUrl: data.mapUrl ?? current.mapUrl,
       lineLink: data.lineLink ?? current.lineLink,
       monthlyDueDay: Number.isFinite(Number(data.monthlyDueDay))
         ? Number(data.monthlyDueDay)
         : current.monthlyDueDay,
+      lineOaChannelId: data.lineOaChannelId ?? current.lineOaChannelId,
+      lineOaChannelSecret:
+        data.lineOaChannelSecret ?? current.lineOaChannelSecret,
+      lineOaChannelAccessToken:
+        data.lineOaChannelAccessToken ?? current.lineOaChannelAccessToken,
+      slipokApiKey: data.slipokApiKey ?? current.slipokApiKey,
+      slipokApiUrl: data.slipokApiUrl ?? current.slipokApiUrl,
+      slipokBranchId: data.slipokBranchId ?? current.slipokBranchId,
     };
     try {
+      // Ensure directory exists
+      const dir = path.dirname(p);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
       fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
-    } catch {
+    } catch (e) {
+      console.error('Failed to save dorm extra:', e);
       return next;
     }
     return next;

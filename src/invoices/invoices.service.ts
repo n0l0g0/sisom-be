@@ -1255,10 +1255,15 @@ export class InvoicesService implements OnModuleInit {
 
   async markOverdue() {
     const now = new Date();
+    // Use a grace period of 1 day: only mark as OVERDUE if the due date was *before* yesterday
+    // e.g. if Due Date is 5th, on 5th we do nothing. On 6th, (now - 1 day) is 5th, so we mark it.
+    const cutoffDate = new Date(now);
+    cutoffDate.setDate(cutoffDate.getDate() - 1);
+
     const ids = await this.prisma.invoice.findMany({
       where: {
         status: InvoiceStatus.SENT,
-        dueDate: { lt: now },
+        dueDate: { lt: cutoffDate },
       },
       select: { id: true },
     });
@@ -1266,7 +1271,7 @@ export class InvoicesService implements OnModuleInit {
     await this.prisma.invoice.updateMany({
       where: {
         status: InvoiceStatus.SENT,
-        dueDate: { lt: now },
+        dueDate: { lt: cutoffDate },
       },
       data: { status: InvoiceStatus.OVERDUE },
     });

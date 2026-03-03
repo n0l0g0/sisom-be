@@ -16,4 +16,28 @@ export class DormExtraDto {
   @IsOptional()
   @IsNumber()
   monthlyDueDay?: number;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelId?: string;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelSecret?: string;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelAccessToken?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokApiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokBranchId?: string;
 }
