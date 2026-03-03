@@ -120,6 +120,7 @@ model Room {
   building      Building?  @relation(fields: [buildingId], references: [id])
   contracts     Contract[]
   meterReadings MeterReading[]
+  meterReplacements MeterReplacement[]
   maintenanceRequests MaintenanceRequest[]
   assets        Asset[]
   contacts      RoomContact[]
@@ -293,4 +294,27 @@ model RoomContact {
   updatedAt  DateTime @updatedAt
 
   @@index([roomId])
+}
+
+model MeterReplacement {
+  id                    String   @id @default(cuid())
+  roomId                String
+  type                  MeterType
+  oldMeterFinalReading  Decimal  @db.Decimal(10, 2)
+  newMeterStartReading  Decimal  @db.Decimal(10, 2)
+  replacedAt            DateTime @default(now())
+  recordedBy            String?
+  
+  room                  Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([roomId])
+  @@index([replacedAt])
+}
+
+enum MeterType {
+  WATER
+  ELECTRIC
 }

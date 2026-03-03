@@ -457,4 +457,36 @@ export class RoomsService {
   listRoomPaymentSchedules() {
     return this.readSchedulesStore() || {};
   }
+
+  async addMeterReplacement(
+    roomId: string,
+    payload: {
+      type: 'WATER' | 'ELECTRIC';
+      oldMeterFinalReading: number;
+      newMeterStartReading: number;
+    },
+  ) {
+    const room = await this.prisma.room.findUnique({
+      where: { id: roomId },
+    });
+    if (!room) {
+      throw new NotFoundException('room not found');
+    }
+    const replacement = await this.prisma.meterReplacement.create({
+      data: {
+        roomId,
+        type: payload.type,
+        oldMeterFinalReading: payload.oldMeterFinalReading,
+        newMeterStartReading: payload.newMeterStartReading,
+      },
+    });
+    return replacement;
+  }
+
+  async getMeterReplacements(roomId: string) {
+    return this.prisma.meterReplacement.findMany({
+      where: { roomId },
+      orderBy: { replacedAt: 'desc' },
+    });
+  }
 }

@@ -93,4 +93,24 @@ export class RoomsController {
     const schedules = this.roomsService.listRoomPaymentSchedules();
     return { schedules };
   }
+
+  @Post(':id/meter-replacements')
+  async addMeterReplacement(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      type: 'WATER' | 'ELECTRIC';
+      oldMeterFinalReading: number;
+      newMeterStartReading: number;
+    },
+  ) {
+    const replacement = await this.roomsService.addMeterReplacement(id, body);
+    return { replacement };
+  }
+
+  @Get(':id/meter-replacements')
+  async getMeterReplacements(@Param('id') id: string) {
+    const replacements = await this.roomsService.getMeterReplacements(id);
+    return { replacements };
+  }
 }
