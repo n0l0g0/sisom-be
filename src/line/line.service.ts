@@ -666,6 +666,21 @@ export class LineService implements OnModuleInit {
       this.registerPhoneTimers.delete(userId);
     }
   }
+  
+  private async isUserAlreadyLinked(userId?: string | null): Promise<boolean> {
+    if (!userId) return false;
+    try {
+      const contacts = await this.findRoomContactsByLineUserId(userId);
+      if (contacts && contacts.length > 0) return true;
+      const tenant = await this.prisma.tenant.findFirst({
+        where: { lineUserId: userId },
+        select: { id: true },
+      });
+      return !!tenant;
+    } catch {
+      return false;
+    }
+  }
 
   private startTenantMaintenanceTimer(userId: string) {
     const prev = this.tenantMaintenanceTimers.get(userId);
@@ -1173,6 +1188,8 @@ export class LineService implements OnModuleInit {
         const { roomId, contact: existing } = contactMatch;
         if (existing.lineUserId) {
           if (existing.lineUserId === userId) {
+            this.registerPhoneContext.delete(userId);
+            this.clearRegisterPhoneTimer(userId);
             return this.replyText(
               replyToken,
               'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
@@ -1190,6 +1207,8 @@ export class LineService implements OnModuleInit {
           data: { lineUserId: userId },
         });
 
+        this.registerPhoneContext.delete(userId);
+        this.clearRegisterPhoneTimer(userId);
         if (this.isStaffUser(userId)) {
           await this.linkMenuForUser(userId, 'ADMIN');
         } else {
@@ -1229,6 +1248,8 @@ export class LineService implements OnModuleInit {
             'บัญชี LINE ของคุณเชื่อมต่อเรียบร้อยแล้ว',
             'สามารถใช้งานบริการต่าง ๆ ผ่านไลน์ได้ทันทีค่ะ/ครับ',
           ].join('\n');
+          this.registerPhoneContext.delete(userId);
+          this.clearRegisterPhoneTimer(userId);
           return this.replyText(replyToken, msg);
         }
         return this.replyText(
@@ -3615,6 +3636,14 @@ export class LineService implements OnModuleInit {
       const variants = this.phoneVariants(text);
       this.logger.log(`register-flow: phone received ${JSON.stringify(variants)} ctx=${this.registerPhoneContext.get(userId || '') ? 'yes' : 'no'}`);
 
+      // If this LINE user is already linked, do not allow re-link
+      if (await this.isUserAlreadyLinked(userId)) {
+        return this.replyText(
+          event.replyToken,
+          'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+        );
+      }
+
       // If user is in registration context, proceed directly
       if (userId && this.registerPhoneContext.get(userId)) {
         this.registerPhoneContext.delete(userId);
@@ -3622,19 +3651,12 @@ export class LineService implements OnModuleInit {
         return this.handlePhoneRegistration(variants, userId, event.replyToken);
       }
 
-      // Even if not in context, attempt direct registration when phone exists
-      const contactMatch = await this.findRoomContactByPhones(variants);
-      const tenant = await this.prisma.tenant.findFirst({
-        where: { OR: variants.map((p) => ({ phone: p })) },
-      });
-      if (contactMatch || tenant) {
-        return this.handlePhoneRegistration(variants, userId, event.replyToken);
-      }
-
+      // Only allow registration when user explicitly starts flow
       return this.replyText(
         event.replyToken,
-        'ไม่พบเบอร์ในระบบ กรุณาติดต่อผู้ดูแล',
+        'หากต้องการเชื่อมบัญชี กรุณาพิมพ์ REGISTERSISOM แล้วส่งเบอร์โทร',
       );
+
     }
 
     if (text.includes('แจ้งย้าย')) {
