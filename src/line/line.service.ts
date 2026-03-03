@@ -168,6 +168,28 @@ export class LineService implements OnModuleInit {
       moveoutDate?: string;
     }
   >();
+  private readonly actionCooldown = new Map<string, number>();
+  private readonly recentMedia = new Map<string, { id: string; expires: number }>();
+  private isOnCooldown(userId?: string | null, action?: string, ms = 15000): boolean {
+    const uid = (userId || '').trim();
+    const act = (action || '').trim();
+    if (!uid || !act) return false;
+    const key = `${uid}:${act}`;
+    const until = this.actionCooldown.get(key) || 0;
+    return until > Date.now();
+  }
+  private startCooldown(userId?: string | null, action?: string, ms = 15000) {
+    const uid = (userId || '').trim();
+    const act = (action || '').trim();
+    if (!uid || !act) return;
+    const key = `${uid}:${act}`;
+    const expire = Date.now() + Math.max(1000, ms);
+    this.actionCooldown.set(key, expire);
+    setTimeout(() => {
+      const until = this.actionCooldown.get(key);
+      if (until && until <= Date.now()) this.actionCooldown.delete(key);
+    }, Math.max(1000, ms));
+  }
   private readonly recentChats: Array<{
     id: string;
     userId: string;
@@ -2178,6 +2200,10 @@ export class LineService implements OnModuleInit {
     }
 
     if (text === 'จดมิเตอร์' || text === 'จดน้ำไฟ') {
+      if (this.isOnCooldown(userId, 'METER_LINK', 5000)) {
+        return null;
+      }
+      this.startCooldown(userId, 'METER_LINK', 5000);
       if (!userId) {
         await this.replyText(
           event.replyToken,
@@ -2286,6 +2312,10 @@ export class LineService implements OnModuleInit {
     }
 
     if (text === 'แจ้งซ่อม') {
+      if (this.isOnCooldown(userId, 'MAINT_START', 8000)) {
+        return null;
+      }
+      this.startCooldown(userId, 'MAINT_START', 8000);
       if (userId && this.hasBlockingFlow(userId)) {
         return this.replyText(
           event.replyToken,
@@ -3820,6 +3850,10 @@ export class LineService implements OnModuleInit {
 
     if (text === 'รายการแจ้งซ่อม') {
       const userId = event.source.userId;
+      if (this.isOnCooldown(userId, 'MAINT_LIST', 8000)) {
+        return null;
+      }
+      this.startCooldown(userId, 'MAINT_LIST', 8000);
       if (!this.isStaffUser(userId)) {
         return this.replyText(
           event.replyToken,
@@ -3848,6 +3882,10 @@ export class LineService implements OnModuleInit {
     }
 
     if (text.startsWith('ชำระค่าห้อง')) {
+      if (this.isOnCooldown(userId, 'PAY_RENT', 7000)) {
+        return null;
+      }
+      this.startCooldown(userId, 'PAY_RENT', 7000);
       if (!userId) {
         return this.replyText(
           event.replyToken,
@@ -4055,6 +4093,10 @@ export class LineService implements OnModuleInit {
     }
 
     if (text === 'ส่งสลิป') {
+      if (this.isOnCooldown(userId, 'REQUEST_SLIP')) {
+        return null;
+      }
+      this.startCooldown(userId, 'REQUEST_SLIP', 15000);
       if (this.isStaffUser(userId)) {
         const state = this.staffPaymentState.get(userId || '');
         let invoice: Prisma.InvoiceGetPayload<{}> | null = null;
@@ -4106,6 +4148,10 @@ export class LineService implements OnModuleInit {
     }
 
     if (text === 'เลขบัญชีหอพัก') {
+      if (this.isOnCooldown(userId, 'ASK_ACCOUNT')) {
+        return null;
+      }
+      this.startCooldown(userId, 'ASK_ACCOUNT', 10000);
       const dorm = await this.prisma.dormConfig.findFirst({
         orderBy: { updatedAt: 'desc' },
       });
@@ -5440,6 +5486,19 @@ export class LineService implements OnModuleInit {
         event.replyToken,
         'กรุณาส่งสลิปในแชทส่วนตัวกับบอท เพื่อระบุตัวตนผู้เช่า',
       );
+    }
+    const mediaId = event.message.id;
+    if (mediaId) {
+      const prev = this.recentMedia.get(userId);
+      const now = Date.now();
+      if (prev && prev.id === mediaId && prev.expires > now) {
+        return null;
+      }
+      this.recentMedia.set(userId, { id: mediaId, expires: now + 2 * 60 * 1000 });
+      setTimeout(() => {
+        const p = this.recentMedia.get(userId);
+        if (p && p.expires <= Date.now()) this.recentMedia.delete(userId);
+      }, 2 * 60 * 1000);
     }
     {
       const t = this.paymentContextTimers.get(userId);
