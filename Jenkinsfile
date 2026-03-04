@@ -62,8 +62,8 @@ networks:
         
         stage('Build') {
             steps {
-                // BuildKit is missing/broken on this environment, falling back to legacy builder
-                sh 'COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=0 docker-compose build backend'
+                // Use standard docker-compose build without experimental flags
+                sh 'docker-compose build backend'
             }
         }
 
