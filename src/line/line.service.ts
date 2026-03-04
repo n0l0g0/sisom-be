@@ -3721,32 +3721,28 @@ export class LineService implements OnModuleInit {
       if (userId) await this.pushFlex(userId, ratesMessage);
       return null;
     }
-    const cleanPhone = text.replace(/[^\d+]/g, '');
-    if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(cleanPhone)) {
-      const variants = this.phoneVariants(text);
-      this.logger.log(`register-flow: phone received ${JSON.stringify(variants)} ctx=${this.registerPhoneContext.get(userId || '') ? 'yes' : 'no'}`);
-
-      // If this LINE user is already linked, do not allow re-link
-      if (await this.isUserAlreadyLinked(userId)) {
-        return this.replyText(
-          event.replyToken,
-          'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+    if (userId && this.registerPhoneContext.get(userId)) {
+      const cleanPhone = text.replace(/[^\d+]/g, '');
+      if (/^(\+66\d{9}|66\d{9}|0\d{9})$/.test(cleanPhone)) {
+        const variants = this.phoneVariants(text);
+        this.logger.log(
+          `register-flow: phone received ${JSON.stringify(variants)} ctx=yes`,
         );
-      }
 
-      // If user is in registration context, proceed directly
-      if (userId && this.registerPhoneContext.get(userId)) {
+        // If this LINE user is already linked, do not allow re-link
+        if (await this.isUserAlreadyLinked(userId)) {
+          this.registerPhoneContext.delete(userId);
+          this.clearRegisterPhoneTimer(userId);
+          return this.replyText(
+            event.replyToken,
+            'บัญชี LINE นี้เชื่อมกับห้องพักเรียบร้อยแล้ว',
+          );
+        }
+
         this.registerPhoneContext.delete(userId);
         this.clearRegisterPhoneTimer(userId);
         return this.handlePhoneRegistration(variants, userId, event.replyToken);
       }
-
-      // Only allow registration when user explicitly starts flow
-      return this.replyText(
-        event.replyToken,
-        'หากต้องการเชื่อมบัญชี กรุณาพิมพ์ REGISTERSISOM แล้วส่งเบอร์โทร',
-      );
-
     }
 
     if (text.includes('แจ้งย้าย')) {
