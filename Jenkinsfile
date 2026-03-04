@@ -1,28 +1,22 @@
 pipeline {
     agent any
+    options { skipDefaultCheckout(true) }
 
     environment {
         COMPOSE_PROJECT_NAME = 'cozyhouse-be'
-        
-        // Backend Config
         BE_PORT = '3011'
         BE_CONTAINER_NAME = 'cozyhouse-backend'
-        
-        // DB Config
         DB_URL = 'postgresql://admin:HC56LSedjxfuR5Nzgb1MV6zXcV45loiFXG@sisomapt-db:5432/cozyhouse?schema=public'
-        
-        // API URLs
         PUBLIC_API_URL = 'https://line-cozy.washqueue.com'
         API_URL = 'https://line-cozy.washqueue.com'
         INTERNAL_API_URL_BE = 'http://cozyhouse-backend:3000'
-        
-        // Line Config
         LIFF_ID = '2006834078-vJp0XqY3' 
     }
 
     stages {
         stage('Checkout') {
             steps {
+                deleteDir()
                 checkout scm
             }
         }
@@ -62,7 +56,6 @@ networks:
         
         stage('Build') {
             steps {
-                // Use standard docker-compose build without experimental flags
                 sh 'docker-compose build backend'
             }
         }
