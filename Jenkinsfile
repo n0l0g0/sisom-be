@@ -89,10 +89,30 @@ networks:
                 }
             }
         }
+        
+        stage('Build Images') {
+            steps {
+                script {
+                    // Build images in parallel to save time
+                    parallel(
+                        'Build Backend': {
+                            // Use BuildKit for faster builds and better caching
+                            sh 'COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker-compose build backend'
+                        },
+                        'Build Frontend': {
+                            // Use BuildKit for faster builds and better caching
+                            sh 'COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker-compose build frontend'
+                        }
+                    )
+                }
+            }
+        }
 
         stage('Deploy') {
             steps {
-                sh 'docker-compose up -d --build --force-recreate --remove-orphans'
+                // Remove --build since we already built
+                // Remove --force-recreate to only recreate if config/image changed
+                sh 'docker-compose up -d --remove-orphans'
             }
         }
         
