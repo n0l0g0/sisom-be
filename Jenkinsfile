@@ -4,6 +4,7 @@ pipeline {
     environment {
         // Shared Environment Variables
         COMPOSE_PROJECT_NAME = 'cozyhouse-sut'
+        // Use sisomapt-db as host because it's in the same network
         DB_URL = 'postgresql://admin:HC56LSedjxfuR5Nzgb1MV6zXcV45loiFXG@sisomapt-db:5432/cozyhouse?schema=public'
         
         // Frontend Config
