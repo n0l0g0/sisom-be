@@ -801,10 +801,15 @@ export class LineService implements OnModuleInit {
     const buildingPart = data.buildingLabel ? `${data.buildingLabel} /` : '';
     let message = '';
     
+    const amountStr = data.amount.toLocaleString('th-TH', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    });
+    
     if (data.type === 'NEW') {
-      message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ ยอด ${amountStr} บาท แล้วครับ`;
     } else {
-      message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} ยอด ${amountStr} บาท แล้วครับ`;
     }
 
     for (const s of staff) {
@@ -3916,7 +3921,11 @@ export class LineService implements OnModuleInit {
         );
       }
       const requests = await this.prisma.maintenanceRequest.findMany({
-        where: { status: 'PENDING' as any },
+        where: {
+          status: {
+            in: [MaintenanceStatus.PENDING, MaintenanceStatus.IN_PROGRESS],
+          },
+        },
         include: { room: { include: { building: true } } },
         orderBy: { createdAt: 'asc' },
         take: 10,
@@ -3984,7 +3993,7 @@ export class LineService implements OnModuleInit {
       if (contracts.length === 0) {
         return this.replyText(
           event.replyToken,
-          'ยังไม่พบข้อมูลผู้เช่าหรือผู้เข้าพัก กรุณาลงทะเบียนด้วยคำสั่ง REGISTER <เบอร์โทร>',
+          'ยังไม่พบข้อมูลผู้เช่าหรือผู้เข้าพัก กรุณาลงทะเบียนด้วยคำสั่ง REGISTERSISOM <เบอร์โทร>',
         );
       }
 
