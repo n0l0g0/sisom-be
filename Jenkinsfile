@@ -62,6 +62,7 @@ networks:
 
         stage('Deploy') {
             steps {
+                sh 'docker rm -f ${BE_CONTAINER_NAME} || true'
                 sh 'docker-compose up -d --remove-orphans backend'
             }
         }
