@@ -153,7 +153,7 @@ export class PaymentsService {
           // Format: ตึก 3 / บ้านน้อย ชำระค่าห้องเดือน มีนาคม 2026 ยอด 2,163 บาท แล้วครับ
           const amountStr = Number(payment.amount).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           const buildingPart = buildingLabel ? `${buildingLabel} / ` : '';
-          const msg = `${buildingPart}${room} ชำระค่าห้องเดือน ${period || ''} ยอด ${amountStr} บาท แล้วครับ`;
+          const msg = `${buildingPart}${room} ชำระค่าห้อง${period ? `เดือน ${period} ` : ''}ยอด ${amountStr} บาท แล้วครับ`;
           
           await this.lineService.pushMessage(tenant.lineUserId, msg);
           console.log(`[Payment Verify] Text message sent`);
