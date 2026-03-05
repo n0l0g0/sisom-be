@@ -160,7 +160,7 @@ export class PaymentsService {
           console.log(`[Payment Verify] Flex sent`);
         } catch (e) {
           console.error(`[Payment Verify] Flex failed: ${e instanceof Error ? e.message : String(e)}`);
-          const msg = 'ตัดยอดเรียบร้อยแล้วครับ';
+          const msg = `ตัดยอดเรียบร้อยแล้วครับ ยอดเงิน ${Number(payment.amount).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท`;
           try {
             await this.lineService.pushMessage(tenant.lineUserId, msg);
             console.log(`[Payment Verify] Fallback text sent`);
