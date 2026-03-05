@@ -148,18 +148,18 @@ export class PaymentsService {
             payment.invoice?.contract?.room?.building?.name ||
             payment.invoice?.contract?.room?.building?.code ||
             undefined;
-          await this.lineService.pushSuccessFlex(
-            tenant.lineUserId,
-            room,
-            buildingLabel,
-            Number(payment.amount),
-            paidAt,
-            undefined,
-            period,
-          );
-          console.log(`[Payment Verify] Flex sent`);
+          
+          // User request: Send plain text message with amount instead of Flex message
+          // Format: ตึก 3 / บ้านน้อย ชำระค่าห้องเดือน มีนาคม 2026 ยอด 2,163 บาท แล้วครับ
+          const amountStr = Number(payment.amount).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const buildingPart = buildingLabel ? `${buildingLabel} / ` : '';
+          const msg = `${buildingPart}${room} ชำระค่าห้องเดือน ${period || ''} ยอด ${amountStr} บาท แล้วครับ`;
+          
+          await this.lineService.pushMessage(tenant.lineUserId, msg);
+          console.log(`[Payment Verify] Text message sent`);
         } catch (e) {
-          console.error(`[Payment Verify] Flex failed: ${e instanceof Error ? e.message : String(e)}`);
+          console.error(`[Payment Verify] Message failed: ${e instanceof Error ? e.message : String(e)}`);
+          // Fallback if the main message fails (unlikely if pushMessage fails, but good to have)
           const msg = `ตัดยอดเรียบร้อยแล้วครับ ยอดเงิน ${Number(payment.amount).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท`;
           try {
             await this.lineService.pushMessage(tenant.lineUserId, msg);
