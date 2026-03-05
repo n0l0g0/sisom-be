@@ -6980,48 +6980,36 @@ export class LineService implements OnModuleInit {
             maximumFractionDigits: 2,
           })
         : undefined;
-    const header = 'แจ้งเตือนการชำระเงินค่าเช่าผ่านระบบแล้ว';
+    const header = `ชำระเงินค่าเช่า: ห้อง ${params.room}`;
     const lines = [
       params.tenantName && params.tenantName.trim()
         ? `ผู้เช่า: ${params.tenantName.trim()}`
         : undefined,
-      `ห้อง: ${params.room}`,
       params.period ? `รอบบิล: ${params.period}` : undefined,
       amountStr ? `ยอดที่ชำระ: ${amountStr} บาท` : undefined,
       `เวลา: ${whenStr}`,
     ].filter((v): v is string => typeof v === 'string' && v.length > 0);
-    const contents: Array<Record<string, unknown>> = [
-      {
-        type: 'text',
-        text: header,
-        weight: 'bold',
-        size: 'md',
-        wrap: true,
-      },
-      ...lines.map((text) => ({
-        type: 'text',
-        text,
-        size: 'sm',
-        wrap: true,
-      })),
-    ];
-    const flex = {
-      type: 'flex',
-      altText: header,
-      contents: {
-        type: 'bubble',
-        body: {
-          type: 'box',
-          layout: 'vertical',
-          paddingAll: '12px',
-          spacing: 'sm',
-          contents,
-        },
-      },
-    };
+    // Change to simple text message instead of Flex
+    let buildingName = '';
+    try {
+      const roomData = await this.prisma.room.findFirst({
+        where: { number: params.room },
+        include: { building: true },
+      });
+      if (roomData?.building) {
+        buildingName = roomData.building.name || roomData.building.code || '';
+      }
+    } catch (e) {
+      this.logger.error('Failed to find building name for room ' + params.room);
+    }
+
+    const buildingPart = buildingName ? `${buildingName} / ` : '';
+
+    const message = `${buildingPart}${params.room} ชำระค่าห้องเดือน ${params.period || ''} ยอด ${amountStr} บาท แล้วครับ`;
+
     for (const uid of targets) {
       if (uid) {
-        await this.pushFlex(uid, flex);
+        await this.pushMessage(uid, message);
       }
     }
   }
