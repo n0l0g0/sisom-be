@@ -6975,12 +6975,11 @@ export class LineService implements OnModuleInit {
             maximumFractionDigits: 2,
           })
         : undefined;
-    const header = 'แจ้งเตือนการชำระเงินค่าเช่าผ่านระบบแล้ว';
+    const header = `ชำระเงินค่าเช่า: ห้อง ${params.room}`;
     const lines = [
       params.tenantName && params.tenantName.trim()
         ? `ผู้เช่า: ${params.tenantName.trim()}`
         : undefined,
-      `ห้อง: ${params.room}`,
       params.period ? `รอบบิล: ${params.period}` : undefined,
       amountStr ? `ยอดที่ชำระ: ${amountStr} บาท` : undefined,
       `เวลา: ${whenStr}`,
