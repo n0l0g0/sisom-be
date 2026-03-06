@@ -9,6 +9,7 @@ import {
   readDeletedStore,
   softDeleteRecord,
 } from '../activity/logger';
+import { encrypt, decrypt, maskIdCard } from '../common/encryption';
 
 @Injectable()
 export class TenantsService {
@@ -22,6 +23,12 @@ export class TenantsService {
     if (data.lineUserId === '') {
       data.lineUserId = undefined; // let prisma treat it as null/undefined
     }
+    
+    // Encrypt ID Card
+    if (data.idCard) {
+      data.idCard = encrypt(data.idCard);
+    }
+
     return this.prisma.tenant
       .create({
         data,
@@ -33,6 +40,10 @@ export class TenantsService {
           entityId: t.id,
           details: { name: t.name, phone: t.phone },
         });
+        // Decrypt and mask before returning
+        if (t.idCard) {
+          t.idCard = maskIdCard(decrypt(t.idCard));
+        }
         return t;
       });
   }
@@ -76,7 +87,14 @@ export class TenantsService {
       .then((list) => {
         const store = readDeletedStore();
         const removed = new Set<string>(store['Tenant']?.ids || []);
-        return list.filter((t) => !removed.has(t.id));
+        return list
+          .filter((t) => !removed.has(t.id))
+          .map((t) => {
+             if (t.idCard) {
+               t.idCard = maskIdCard(decrypt(t.idCard));
+             }
+             return t;
+          });
       });
   }
 
@@ -88,11 +106,26 @@ export class TenantsService {
           include: { room: true },
         },
       },
+    }).then((t) => {
+      if (t && t.idCard) {
+        t.idCard = maskIdCard(decrypt(t.idCard));
+      }
+      return t;
     });
   }
 
   async update(id: string, updateTenantDto: UpdateTenantDto) {
     const data = { ...updateTenantDto };
+    
+    // Handle ID Card encryption
+    if (data.idCard) {
+      // If masked (e.g. *********1234), assume no change
+      if (data.idCard.includes('*')) {
+        delete data.idCard;
+      } else {
+        data.idCard = encrypt(data.idCard);
+      }
+    }
     
     if (data.status === 'MOVED_OUT') {
       try {
@@ -119,6 +152,9 @@ export class TenantsService {
           entityId: id,
           details: updateTenantDto,
         });
+        if (t.idCard) {
+          t.idCard = maskIdCard(decrypt(t.idCard));
+        }
         return t;
       });
   }
