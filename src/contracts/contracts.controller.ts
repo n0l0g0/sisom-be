@@ -22,9 +22,10 @@ export class ContractsController {
   }
 
   @Get()
-  findAll(@Query('isActive') isActive?: string) {
+  findAll(@Query('isActive') isActive?: string, @Query('q') q?: string) {
     return this.contractsService.findAll({ 
-      isActive: isActive === 'true' ? true : isActive === 'false' ? false : undefined 
+      isActive: isActive === 'true' ? true : isActive === 'false' ? false : undefined,
+      q,
     });
   }
 
