@@ -5087,6 +5087,7 @@ export class LineService implements OnModuleInit {
   }
 
   private buildUnpaidCarouselForStaff(invoices: InvoiceWithContract[]) {
+    const schedules = this.readSchedulesStore() || {};
     const bubbles = invoices.map((inv) => {
       const monthLabel = `${this.thaiMonth(inv.month)} ${inv.year}`;
       const total = Number(inv.totalAmount).toLocaleString('en-US', {
@@ -5102,6 +5103,26 @@ export class LineService implements OnModuleInit {
       const floor = inv.contract?.room?.floor ?? '-';
       const tenantName = inv.contract?.tenant?.name || '-';
       const tenantPhone = inv.contract?.tenant?.phone || '-';
+
+      // Payment Promise Logic
+      const roomId = inv.contract?.roomId;
+      let paymentPromiseText = '-';
+      if (roomId && schedules[roomId]) {
+        const s = schedules[roomId];
+        if (typeof s.monthlyDay === 'number') {
+          paymentPromiseText = `ทุกวันที่ ${s.monthlyDay}`;
+        } else if (s.oneTimeDate) {
+          try {
+            const d = new Date(s.oneTimeDate);
+            paymentPromiseText = d.toLocaleDateString('th-TH', {
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+            });
+          } catch {}
+        }
+      }
+
       return {
         type: 'bubble',
         body: {
@@ -5169,69 +5190,6 @@ export class LineService implements OnModuleInit {
                     },
                   ],
                 },
-                {
-                  type: 'box',
-                  layout: 'horizontal',
-                  contents: [
-                    {
-                      type: 'text',
-                      text: 'ค่าเช่า',
-                      size: 'sm',
-                      color: '#555555',
-                      flex: 1,
-                    },
-                    {
-                      type: 'text',
-                      text: `${Number(inv.rentAmount).toLocaleString()} บ.`,
-                      size: 'sm',
-                      color: '#111111',
-                      flex: 0,
-                      align: 'end',
-                    },
-                  ],
-                },
-                {
-                  type: 'box',
-                  layout: 'horizontal',
-                  contents: [
-                    {
-                      type: 'text',
-                      text: 'ค่าน้ำ',
-                      size: 'sm',
-                      color: '#555555',
-                      flex: 1,
-                    },
-                    {
-                      type: 'text',
-                      text: `${Number(inv.waterAmount).toLocaleString()} บ.`,
-                      size: 'sm',
-                      color: '#111111',
-                      flex: 0,
-                      align: 'end',
-                    },
-                  ],
-                },
-                {
-                  type: 'box',
-                  layout: 'horizontal',
-                  contents: [
-                    {
-                      type: 'text',
-                      text: 'ค่าไฟ',
-                      size: 'sm',
-                      color: '#555555',
-                      flex: 1,
-                    },
-                    {
-                      type: 'text',
-                      text: `${Number(inv.electricAmount).toLocaleString()} บ.`,
-                      size: 'sm',
-                      color: '#111111',
-                      flex: 0,
-                      align: 'end',
-                    },
-                  ],
-                },
               ],
             },
             { type: 'separator', margin: 'md' },
@@ -5261,6 +5219,22 @@ export class LineService implements OnModuleInit {
                   weight: 'bold',
                   size: 'lg',
                   flex: 0,
+                },
+              ],
+            },
+            { type: 'separator', margin: 'md' },
+            {
+              type: 'box',
+              layout: 'vertical',
+              margin: 'md',
+              contents: [
+                {
+                  type: 'text',
+                  text: `วันนัดจ่าย: ${paymentPromiseText}`,
+                  size: 'md',
+                  color: '#FF0000',
+                  weight: 'bold',
+                  align: 'center',
                 },
               ],
             },
