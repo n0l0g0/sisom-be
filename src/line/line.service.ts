@@ -5086,6 +5086,36 @@ export class LineService implements OnModuleInit {
     };
   }
 
+  private getSchedulesFilePath(): string {
+    const dir = path.resolve('/app/uploads');
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
+    }
+    return path.join(dir, 'room-payment-schedule.json');
+  }
+
+  private readSchedulesStore(): Record<
+    string,
+    { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+  > {
+    try {
+      const p = this.getSchedulesFilePath();
+      if (!fs.existsSync(p)) return {};
+      const raw = fs.readFileSync(p, 'utf8');
+      if (!raw.trim()) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      return parsed as Record<
+        string,
+        { monthlyDay?: number; oneTimeDate?: string; updatedAt?: string }
+      >;
+    } catch {
+      return {};
+    }
+  }
+
   private buildUnpaidCarouselForStaff(invoices: InvoiceWithContract[]) {
     const schedules = this.readSchedulesStore() || {};
     const bubbles = invoices.map((inv) => {
