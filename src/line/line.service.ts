@@ -6741,7 +6741,7 @@ export class LineService implements OnModuleInit {
     return this.pushFlex(userId, flex);
   }
 
-  private async pushFlex(userId: string, message: unknown) {
+  async pushFlex(userId: string, message: unknown) {
     if (!this.client) return;
     const altText = (() => {
       if (typeof message !== 'object' || message === null) return 'n/a';
