@@ -1360,17 +1360,122 @@ export class InvoicesService implements OnModuleInit {
         'th-TH',
         { month: 'long', year: 'numeric' },
       );
+      
+      // Fetch invoice to get total amount
+      // Note: thisMonth from Date.getMonth() is 0-indexed, but DB stores 1-indexed usually.
+      // Assuming we want the invoice for the CURRENT period.
+      // If we are notifying for payment, it implies the invoice exists.
+      // We'll try to find invoice for this month or previous month?
+      // Usually rent is paid for current month or previous month usage.
+      // Let's look for the *latest* SENT or OVERDUE invoice for this contract.
+      const invoice = await this.prisma.invoice.findFirst({
+        where: {
+          contractId: contract.id,
+          status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+        },
+        orderBy: { year: 'desc', month: 'desc' },
+      });
+
+      const totalAmount = invoice?.totalAmount ? Number(invoice.totalAmount) : 0;
+      const totalAmountStr = totalAmount.toLocaleString('th-TH', { minimumFractionDigits: 0 });
+      
+      const dateText = new Date(now).toLocaleDateString('th-TH', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+
       const msgTenant = [
         `แจ้งเตือนวันนัดชำระค่าเช่า`,
         `ห้อง ${roomLabel} ตึก ${buildingName}`,
         `ประจำเดือน ${monthText}`,
         `กรุณาชำระตามกำหนดวันนี้`,
       ].join('\n');
-      const msgStaff = [
-        `แจ้งเตือนวันนัดชำระค่าเช่า (ผู้เช่า)`,
-        `ตึก ${buildingName} ห้อง ${roomLabel}`,
-        `ประจำเดือน ${monthText}`,
-      ].join('\n');
+      
+      // Staff Flex Message
+      const staffFlex = {
+        type: 'flex',
+        altText: `แจ้งเตือนวันนัดชำระค่าเช่า ${roomLabel}`,
+        contents: {
+          type: 'bubble',
+          header: {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#FF6413',
+            contents: [
+              {
+                type: 'text',
+                text: 'แจ้งเตือนวันนัดจ่าย',
+                weight: 'bold',
+                size: 'xl',
+                color: '#FFFFFF',
+              },
+              {
+                type: 'text',
+                text: `ห้อง ${roomLabel} ตึก ${buildingName}`,
+                size: 'sm',
+                color: '#FFFFFFCC',
+              },
+            ],
+          },
+          body: {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'md',
+            contents: [
+              {
+                type: 'text',
+                text: `ประจำเดือน ${monthText}`,
+                size: 'md',
+                color: '#555555',
+                align: 'center',
+              },
+              {
+                type: 'separator',
+              },
+              {
+                type: 'box',
+                layout: 'horizontal',
+                contents: [
+                  {
+                    type: 'text',
+                    text: 'ยอดรวม',
+                    weight: 'bold',
+                    size: 'lg',
+                    color: '#111111',
+                  },
+                  {
+                    type: 'text',
+                    text: `฿${totalAmountStr}`,
+                    weight: 'bold',
+                    size: 'lg',
+                    align: 'end',
+                    color: '#111111',
+                  },
+                ],
+              },
+              {
+                type: 'separator',
+              },
+              {
+                type: 'box',
+                layout: 'vertical',
+                contents: [
+                  {
+                    type: 'text',
+                    text: `วันนัดจ่าย: ${dateText}`,
+                    weight: 'bold',
+                    size: 'lg',
+                    color: '#FF0000', // Red color as requested
+                    align: 'center',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      };
+
       const tenantUid = contract.tenant?.lineUserId;
       if (tenantUid) {
         try {
@@ -1379,7 +1484,8 @@ export class InvoicesService implements OnModuleInit {
       }
       for (const uid of staffTargets) {
         try {
-          await this.lineService.pushMessage(uid, msgStaff, 'system');
+          // Use pushFlex for staff instead of text message
+          await this.lineService.pushFlex(uid, staffFlex);
         } catch {}
       }
       count++;
