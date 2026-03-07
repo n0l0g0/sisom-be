@@ -3,7 +3,7 @@ import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LineService } from '../line/line.service';
-import { InvoiceStatus } from '@prisma/client';
+import { InvoiceStatus, MaintenanceStatus } from '@prisma/client';
 import {
   appendLog,
   readDeletedStore,
@@ -131,6 +131,38 @@ export class TenantsService {
       try {
         await this.lineService.disconnectTenant(id);
         await this.cancelTenantInvoices(id);
+
+        // Deactivate contracts
+        await this.prisma.contract.updateMany({
+          where: { tenantId: id, isActive: true },
+          data: { isActive: false, endDate: new Date() },
+        });
+
+        // Complete Move Out Requests
+        const contracts = await this.prisma.contract.findMany({
+          where: { tenantId: id },
+          select: { roomId: true },
+        });
+        const roomIds = contracts.map((c) => c.roomId);
+
+        if (roomIds.length > 0) {
+          await this.prisma.maintenanceRequest.updateMany({
+            where: {
+              roomId: { in: roomIds },
+              status: {
+                in: [MaintenanceStatus.PENDING, MaintenanceStatus.IN_PROGRESS],
+              },
+              OR: [
+                { title: { contains: 'ย้ายออก' } },
+                { description: { contains: 'MOVE_OUT' } },
+              ],
+            },
+            data: {
+              status: MaintenanceStatus.COMPLETED,
+              resolvedAt: new Date(),
+            },
+          });
+        }
       } catch (e) {
         console.error(`Failed to handle move out for tenant ${id}:`, e);
       }
