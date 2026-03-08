@@ -14,6 +14,7 @@ import { diskStorage } from 'multer';
 import { existsSync, mkdirSync, readdirSync } from 'fs';
 import { extname, join } from 'path';
 import { MediaService } from './media.service';
+import { tenantContext } from '../tenant-db/tenant-context';
 import type { Request } from 'express';
 import type { Response } from 'express';
 
@@ -37,9 +38,19 @@ type DiskStorageFactory = (options: {
 
 const createDiskStorage = diskStorage as unknown as DiskStorageFactory;
 
-const uploadDir = join(process.cwd(), 'uploads');
-if (!existsSync(uploadDir)) {
-  mkdirSync(uploadDir, { recursive: true });
+const uploadBase =
+  process.env.UPLOAD_DIR || join(process.cwd(), 'uploads');
+if (!existsSync(uploadBase)) {
+  mkdirSync(uploadBase, { recursive: true });
+}
+
+function getUploadDestinationDir(tenantId: string | undefined): string {
+  const base = process.env.UPLOAD_DIR || join(process.cwd(), 'uploads');
+  const dir = tenantId ? join(base, tenantId) : base;
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return dir;
 }
 
 @Controller('media')
@@ -55,7 +66,10 @@ export class MediaController {
           _file: UploadFile,
           cb: DestinationCallback,
         ) => {
-          cb(null, uploadDir);
+          const store = tenantContext.getStore();
+          const tenantId = store?.tenantId;
+          const dir = getUploadDestinationDir(tenantId);
+          cb(null, dir);
         },
         filename: (_req: Request, file: UploadFile, cb: FilenameCallback) => {
           const unique =
@@ -81,22 +95,13 @@ export class MediaController {
     if (!file) {
       throw new BadRequestException('ไม่พบไฟล์ที่อัปโหลด');
     }
+    const store = tenantContext.getStore();
+    const tenantId = store?.tenantId;
+    const url = this.mediaService.buildUrl(req, file.filename, tenantId);
     return {
-      url: this.mediaService.buildUrl(req, file.filename),
-      filename: file.filename,
+      url,
+      filename: tenantId ? `${tenantId}/${file.filename}` : file.filename,
     };
-  }
-
-  @Get(':filename')
-  serve(@Param('filename') filename: string, @Res() res: Response) {
-    const filePath = join(this.mediaService.getUploadDir(), filename);
-    res.sendFile(filePath, (err) => {
-      if (err) {
-        res
-          .status(404)
-          .json({ message: 'Not Found', error: 'Not Found', statusCode: 404 });
-      }
-    });
   }
 
   @Get('room/:filename')

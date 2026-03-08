@@ -12,6 +12,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - UPLOAD_DIR=/app/uploads
       - DATABASE_URL=postgresql://admin:password@172.18.0.1:5433/sisomapt?schema=public
       - OWNER_API_URL=http://owner13rent-backend:3000
     volumes:

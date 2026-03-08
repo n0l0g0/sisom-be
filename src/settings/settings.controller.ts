@@ -18,12 +18,12 @@ export class SettingsController {
   }
 
   @Get('dorm-extra')
-  getDormExtra() {
+  async getDormExtra() {
     return this.settingsService.getDormExtra();
   }
 
   @Put('dorm-extra')
-  updateDormExtra(@Body() body: DormExtraDto) {
+  async updateDormExtra(@Body() body: DormExtraDto) {
     return this.settingsService.updateDormExtra(body || {});
   }
 }

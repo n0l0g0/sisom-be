@@ -58,22 +58,9 @@ export class SlipOkService {
   constructor(private readonly settingsService: SettingsService) {}
   private readonly logger = new Logger(SlipOkService.name);
 
-  private getApiKey(): string | undefined {
-    const extra = this.settingsService.getDormExtra();
-    return extra.slipokApiKey || process.env.SLIPOK_API_KEY;
-  }
-
-  private getCheckUrl(): string {
-    const extra = this.settingsService.getDormExtra();
-    return (
-      extra.slipokApiUrl ||
-      process.env.SLIPOK_CHECK_URL ||
-      'https://api.slipok.com/api/line/apikey/60698'
-    );
-  }
-
   async verifyByUrl(url: string, amount?: number): Promise<SlipOkResult> {
-    const apiKey = this.getApiKey();
+    const extra = await this.settingsService.getDormExtra();
+    const apiKey = extra.slipokApiKey || process.env.SLIPOK_API_KEY;
     if (!apiKey) {
       this.logger.warn('SLIPOK_API_KEY is not set');
       return { ok: false, message: 'missing api key' };
@@ -83,7 +70,11 @@ export class SlipOkService {
       if (typeof amount === 'number') {
         payload.amount = amount;
       }
-      const res = await fetch(this.getCheckUrl(), {
+      const checkUrl =
+        extra.slipokApiUrl ||
+        process.env.SLIPOK_CHECK_URL ||
+        'https://api.slipok.com/api/line/apikey/60698';
+      const res = await fetch(checkUrl, {
         method: 'POST',
         headers: {
           'x-authorization': apiKey,
@@ -173,7 +164,8 @@ export class SlipOkService {
   }
 
   async verifyByData(filePath: string, amount?: number): Promise<SlipOkResult> {
-    const apiKey = this.getApiKey();
+    const extra = await this.settingsService.getDormExtra();
+    const apiKey = extra.slipokApiKey || process.env.SLIPOK_API_KEY;
     if (!apiKey) {
       this.logger.warn('SLIPOK_API_KEY is not set');
       return { ok: false, message: 'missing api key' };
@@ -187,7 +179,11 @@ export class SlipOkService {
       if (typeof amount === 'number') {
         fd.append('amount', String(amount));
       }
-      const res = await fetch(this.getCheckUrl(), {
+      const checkUrl =
+        extra.slipokApiUrl ||
+        process.env.SLIPOK_CHECK_URL ||
+        'https://api.slipok.com/api/line/apikey/60698';
+      const res = await fetch(checkUrl, {
         method: 'POST',
         headers: {
           'x-authorization': apiKey,

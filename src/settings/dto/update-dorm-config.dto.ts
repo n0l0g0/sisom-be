@@ -94,4 +94,48 @@ export class UpdateDormConfigDto {
   @IsOptional()
   @IsString()
   bankAccount?: string;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelId?: string;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelSecret?: string;
+
+  @IsOptional()
+  @IsString()
+  lineOaChannelAccessToken?: string;
+
+  @IsOptional()
+  @IsString()
+  liffId?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokApiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  slipokBranchId?: string;
+
+  @IsOptional()
+  @IsString()
+  logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  mapUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  lineLink?: string;
+
+  @IsOptional()
+  @IsNumber()
+  monthlyDueDay?: number;
 }

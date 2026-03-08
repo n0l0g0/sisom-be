@@ -38,6 +38,17 @@ export class InvoicesController {
     return this.invoicesService.export(Number(month), Number(year), res);
   }
 
+  @Get('outstanding-report')
+  getOutstandingReport(
+    @Query('month') month: string,
+    @Query('year') year: string,
+  ) {
+    return this.invoicesService.getOutstandingReport(
+      Number(month) || new Date().getMonth() + 1,
+      Number(year) || new Date().getFullYear(),
+    );
+  }
+
   @Get()
   findAll(@Query('roomId') roomId?: string, @Query('ids') ids?: string) {
     if (ids) {

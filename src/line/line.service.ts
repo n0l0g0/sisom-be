@@ -87,14 +87,6 @@ export class LineService implements OnModuleInit {
   private _client: messagingApi.MessagingApiClient;
   private _blobClient: messagingApi.MessagingApiBlobClient | undefined;
 
-  private get client(): messagingApi.MessagingApiClient {
-    return this.getClient();
-  }
-
-  private get blobClient(): messagingApi.MessagingApiBlobClient | undefined {
-    return this.getBlobClient();
-  }
-
   private currentAccessToken: string | undefined;
   private readonly logger = new Logger(LineService.name);
   private readonly richMenuGeneralId =
@@ -363,17 +355,18 @@ export class LineService implements OnModuleInit {
     pictureUrl?: string;
   }> {
     const uid = (userId || '').trim();
-    if (!uid || !this.client) return {};
+    const client = await this.getClientAsync();
+    if (!uid || !client) return {};
     const now = Date.now();
     const cached = this.lineProfileCache.get(uid);
     if (cached && now - cached.updatedAt < 7 * 24 * 60 * 60 * 1000) {
       return { displayName: cached.displayName, pictureUrl: cached.pictureUrl };
     }
     try {
-      const client = this.client as messagingApi.MessagingApiClient & {
+      const c = client as messagingApi.MessagingApiClient & {
         getProfile: (userId: string) => Promise<unknown>;
       };
-      const res = await client.getProfile(uid);
+      const res = await c.getProfile(uid);
       const displayName =
         typeof res?.displayName === 'string' ? res.displayName : undefined;
       const pictureUrl =
@@ -446,7 +439,7 @@ export class LineService implements OnModuleInit {
     let sentOfficial: number | undefined;
     let limitOfficial: number | undefined;
     try {
-      const token = this.getChannelAccessToken();
+      const token = await this.getChannelAccessTokenAsync();
       if (token) {
         const quotaRes = await fetch(
           'https://api.line.me/v2/bot/message/quota',
@@ -950,8 +943,10 @@ export class LineService implements OnModuleInit {
     invoice: InvoiceBase,
     room: RoomBase,
     tenant: TenantBase,
+    liffIdOverride?: string,
   ): Record<string, unknown> {
-    const liffUrl = `https://liff.line.me/${this.liffId}/bills/${invoice.id}`;
+    const lid = liffIdOverride ?? this.liffId;
+    const liffUrl = lid ? `https://liff.line.me/${lid}/bills/${invoice.id}` : `https://cms.washqueue.com/bills/${invoice.id}`;
     const monthName = new Date(invoice.year, invoice.month - 1).toLocaleString(
       'th-TH',
       { month: 'long', year: 'numeric' },
@@ -1380,18 +1375,18 @@ export class LineService implements OnModuleInit {
     private slipOk: SlipOkService,
     private settingsService: SettingsService,
   ) {
-    this.refreshClients();
+    void this.refreshClientsAsync();
   }
 
-  private getChannelAccessToken(): string | undefined {
-    const extra = this.settingsService.getDormExtra();
+  private async getChannelAccessTokenAsync(): Promise<string | undefined> {
+    const extra = await this.settingsService.getDormExtra();
     return (
       extra.lineOaChannelAccessToken || process.env.LINE_CHANNEL_ACCESS_TOKEN
     );
   }
 
-  private refreshClients() {
-    const token = this.getChannelAccessToken();
+  private async refreshClientsAsync(): Promise<void> {
+    const token = await this.getChannelAccessTokenAsync();
     if (token && token !== this.currentAccessToken) {
       this.currentAccessToken = token;
       this._client = new messagingApi.MessagingApiClient({
@@ -1411,19 +1406,19 @@ export class LineService implements OnModuleInit {
     }
   }
 
-  private getClient(): messagingApi.MessagingApiClient {
-    this.refreshClients();
+  private async getClientAsync(): Promise<messagingApi.MessagingApiClient> {
+    await this.refreshClientsAsync();
     if (!this._client) {
-      const token = this.getChannelAccessToken() || '';
+      const token = (await this.getChannelAccessTokenAsync()) || '';
       return new messagingApi.MessagingApiClient({ channelAccessToken: token });
     }
     return this._client;
   }
 
-  private getBlobClient(): messagingApi.MessagingApiBlobClient {
-    this.refreshClients();
+  private async getBlobClientAsync(): Promise<messagingApi.MessagingApiBlobClient> {
+    await this.refreshClientsAsync();
     if (!this._blobClient) {
-      const token = this.getChannelAccessToken() || '';
+      const token = (await this.getChannelAccessTokenAsync()) || '';
       return new messagingApi.MessagingApiBlobClient({
         channelAccessToken: token,
       });
@@ -1464,11 +1459,12 @@ export class LineService implements OnModuleInit {
   }
 
   private async setDefaultRichMenuGeneral() {
-    if (!this.client) return;
+    const client = await this.getClientAsync();
+    if (!client) return;
     const generalId = this.getGeneralRichMenuId();
     if (!generalId) return;
     try {
-      await this.client.setDefaultRichMenu(generalId);
+      await client.setDefaultRichMenu(generalId);
       this.logger.log('Default Rich Menu set to GENERAL');
     } catch (e) {
       this.logger.warn(
@@ -1478,9 +1474,10 @@ export class LineService implements OnModuleInit {
   }
 
   private async setDefaultRichMenu(richMenuId: string) {
-    if (!this.client || !richMenuId) return;
+    const client = await this.getClientAsync();
+    if (!client || !richMenuId) return;
     try {
-      await this.client.setDefaultRichMenu(richMenuId);
+      await client.setDefaultRichMenu(richMenuId);
     } catch (e) {
       this.logger.warn(
         `setDefaultRichMenu(id) error: ${e instanceof Error ? e.message : String(e)}`,
@@ -1489,9 +1486,10 @@ export class LineService implements OnModuleInit {
   }
 
   private async linkRichMenu(userId: string, richMenuId: string) {
-    if (!this.client || !userId || !richMenuId) return;
+    const client = await this.getClientAsync();
+    if (!client || !userId || !richMenuId) return;
     try {
-      await this.client.linkRichMenuIdToUser(userId, richMenuId);
+      await client.linkRichMenuIdToUser(userId, richMenuId);
     } catch (e) {
       this.logger.warn(
         `linkRichMenu error: ${e instanceof Error ? e.message : String(e)}`,
@@ -1500,9 +1498,10 @@ export class LineService implements OnModuleInit {
   }
 
   private async unlinkRichMenu(userId: string) {
-    if (!this.client || !userId) return;
+    const client = await this.getClientAsync();
+    if (!client || !userId) return;
     try {
-      await this.client.unlinkRichMenuIdFromUser(userId);
+      await client.unlinkRichMenuIdFromUser(userId);
     } catch (e) {
       this.logger.warn(
         `unlinkRichMenu error: ${e instanceof Error ? e.message : String(e)}`,
@@ -4451,7 +4450,7 @@ export class LineService implements OnModuleInit {
 
     if (text.includes('ติดต่อสอบถาม')) {
       const dorm = await this.settingsService.getDormConfig();
-      const extra = this.settingsService.getDormExtra();
+      const extra = await this.settingsService.getDormExtra();
       const logoUrl = this.getDormLogoUrl();
       const base =
         process.env.PUBLIC_API_URL || process.env.INTERNAL_API_URL || '';
@@ -4577,7 +4576,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
+        headers: { Authorization: `Bearer ${await this.getChannelAccessTokenAsync()}` },
       });
       if (!res.ok)
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -4755,7 +4754,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
+        headers: { Authorization: `Bearer ${await this.getChannelAccessTokenAsync()}` },
       });
       if (!res.ok)
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -4834,9 +4833,10 @@ export class LineService implements OnModuleInit {
   }
 
   private async replyText(replyToken: string, text: string) {
-    if (!this.client) return;
+    const client = await this.getClientAsync();
+    if (!client) return;
     this.logger.log(`replyText: ${text.slice(0, 60)}`);
-    return this.client.replyMessage({
+    return client.replyMessage({
       replyToken,
       messages: [{ type: 'text', text }],
     });
@@ -4864,7 +4864,8 @@ export class LineService implements OnModuleInit {
     replyToken: string,
     message: Record<string, unknown>,
   ) {
-    if (!this.client) return;
+    const client = await this.getClientAsync();
+    if (!client) return;
     try {
       const altText =
         typeof message.altText === 'string' ? message.altText : 'n/a';
@@ -4874,7 +4875,7 @@ export class LineService implements OnModuleInit {
         `replyFlex log failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    return this.client.replyMessage({
+    return client.replyMessage({
       replyToken,
       messages: [message as unknown as messagingApi.Message],
     });
@@ -4883,8 +4884,9 @@ export class LineService implements OnModuleInit {
     replyToken: string,
     messages: Array<Record<string, unknown>>,
   ) {
-    if (!this.client) return;
-    return this.client.replyMessage({
+    const client = await this.getClientAsync();
+    if (!client) return;
+    return client.replyMessage({
       replyToken,
       messages: messages as unknown as messagingApi.Message[],
     });
@@ -5577,7 +5579,8 @@ export class LineService implements OnModuleInit {
     return null;
   }
   private async handleSlipImage(event: LineImageEvent): Promise<string | null> {
-    if (!this.client) return null;
+    const client = await this.getClientAsync();
+    if (!client) return null;
     const userId = event.source.userId;
     if (!userId) {
       await this.replyText(
@@ -5773,7 +5776,7 @@ export class LineService implements OnModuleInit {
       try {
         const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
         const res = await fetch(apiUrl, {
-          headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
+          headers: { Authorization: `Bearer ${await this.getChannelAccessTokenAsync()}` },
         });
         if (res.ok && res.body) {
           const stream = Readable.fromWeb(
@@ -5862,7 +5865,7 @@ export class LineService implements OnModuleInit {
     try {
       const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
       const res = await fetch(apiUrl, {
-        headers: { Authorization: `Bearer ${this.getChannelAccessToken()}` },
+        headers: { Authorization: `Bearer ${await this.getChannelAccessTokenAsync()}` },
       });
       if (!res.ok) {
         throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
@@ -6232,12 +6235,13 @@ export class LineService implements OnModuleInit {
   }
 
   async pushMessage(userId: string, text: string, actor?: string) {
-    if (!this.client) {
+    const client = await this.getClientAsync();
+    if (!client) {
       this.logger.warn('Line Client not initialized');
       return;
     }
     try {
-      const res = await this.client.pushMessage({
+      const res = await client.pushMessage({
         to: userId,
         messages: [{ type: 'text', text }],
       });
@@ -6403,7 +6407,8 @@ export class LineService implements OnModuleInit {
   }
 
   async apiCreateGeneralRichMenuFromLocal() {
-    if (!this.client) {
+    const client = await this.getClientAsync();
+    if (!client) {
       return { ok: false, error: 'Line client not initialized' };
     }
     const uploadCandidate = join(
@@ -6454,7 +6459,7 @@ export class LineService implements OnModuleInit {
         },
       ],
     };
-    const createRes = await this.client.createRichMenu(payload);
+    const createRes = await client.createRichMenu(payload);
     const richMenuId = createRes.richMenuId;
     const ext = extname(localPath).toLowerCase();
     const uploadsName = `richmenu-a-${Date.now()}${ext}`;
@@ -6484,7 +6489,9 @@ export class LineService implements OnModuleInit {
   }
 
   async apiCreateTenantRichMenuFromLocal() {
-    if (!this.client) {
+    const client = await this.getClientAsync();
+    const blobClient = await this.getBlobClientAsync();
+    if (!client) {
       return { ok: false, error: 'Line client not initialized' };
     }
     let localPath = join(this.projectRoot, 'richmenu', 'b.png');
@@ -6536,15 +6543,15 @@ export class LineService implements OnModuleInit {
         },
       ],
     };
-    const createRes = await this.client.createRichMenu(payload);
+    const createRes = await client.createRichMenu(payload);
     const richMenuId = createRes.richMenuId;
     const buf = readFileSync(localPath);
-    if (this.blobClient) {
+    if (blobClient) {
       const ext = extname(localPath).toLowerCase();
       const mimeType =
         ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
       const blob = new Blob([buf], { type: mimeType });
-      await this.blobClient.setRichMenuImage(richMenuId, blob);
+      await blobClient.setRichMenuImage(richMenuId, blob);
     }
     const ext = extname(localPath).toLowerCase();
     const uploadsName = `richmenu-b-${Date.now()}${ext}`;
@@ -6560,7 +6567,9 @@ export class LineService implements OnModuleInit {
   }
 
   async apiCreateAdminRichMenuFromLocal() {
-    if (!this.client) {
+    const client = await this.getClientAsync();
+    const blobClient = await this.getBlobClientAsync();
+    if (!client) {
       return { ok: false, error: 'Line client not initialized' };
     }
     let localPath = join(this.projectRoot, 'richmenu', 'c.png');
@@ -6578,9 +6587,11 @@ export class LineService implements OnModuleInit {
       return { ok: false, error: `File not found: ${localPath}` };
     }
     const meterPath = '/meter';
-    const meterUrl = this.liffId
-      ? `https://liff.line.me/${this.liffId}?path=${encodeURIComponent(meterPath)}`
-      : 'https://line-sisom.washqueue.com/meter';
+    const extra = await this.settingsService.getDormExtra();
+    const lid = extra.liffId ?? this.liffId;
+    const meterUrl = lid
+      ? `https://liff.line.me/${lid}?path=${encodeURIComponent(meterPath)}`
+      : 'https://cms.washqueue.com/meter';
     const payload: messagingApi.RichMenuRequest = {
       size: { width: 2500, height: 1686 },
       selected: true,
@@ -6609,15 +6620,15 @@ export class LineService implements OnModuleInit {
         },
       ],
     };
-    const createRes = await this.client.createRichMenu(payload);
+    const createRes = await client.createRichMenu(payload);
     const richMenuId = createRes.richMenuId;
     const buf = readFileSync(localPath);
-    if (this.blobClient) {
+    if (blobClient) {
       const ext = extname(localPath).toLowerCase();
       const mimeType =
         ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
       const blob = new Blob([buf], { type: mimeType });
-      await this.blobClient.setRichMenuImage(richMenuId, blob);
+      await blobClient.setRichMenuImage(richMenuId, blob);
     }
     const ext = extname(localPath).toLowerCase();
     const uploadsName = `richmenu-c-${Date.now()}${ext}`;
@@ -6756,7 +6767,8 @@ export class LineService implements OnModuleInit {
   }
 
   async pushFlex(userId: string, message: unknown) {
-    if (!this.client) return;
+    const client = await this.getClientAsync();
+    if (!client) return;
     const altText = (() => {
       if (typeof message !== 'object' || message === null) return 'n/a';
       const m = message as Record<string, unknown>;
@@ -6767,7 +6779,7 @@ export class LineService implements OnModuleInit {
     } catch (e) {
       void e;
     }
-    const res = await this.client.pushMessage({
+    const res = await client.pushMessage({
       to: userId,
       messages: [message as messagingApi.Message],
     });

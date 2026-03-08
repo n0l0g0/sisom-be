@@ -8,8 +8,10 @@ import {
   Query,
   Body,
   Req,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { LineService } from './line.service';
+import { SettingsService } from '../settings/settings.service';
 import type { WebhookRequestBody } from '@line/bot-sdk';
 import * as crypto from 'crypto';
 import type { Request } from 'express';
@@ -17,7 +19,10 @@ import type { Request } from 'express';
 @Controller('line')
 export class LineController {
   private readonly logger = new Logger(LineController.name);
-  constructor(private readonly lineService: LineService) {}
+  constructor(
+    private readonly lineService: LineService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   @Post('webhook')
   async webhook(
@@ -25,29 +30,28 @@ export class LineController {
     @Headers('x-line-signature') signature: string,
     @Req() req: Request & { rawBody?: Buffer },
   ) {
-    // Validate signature manually if not using middleware globally
-    // For simplicity, we trust the service handles verification or we do it here
-    // Note: In a production NestJS app, we often use a Guard or Middleware for signature validation
+    const extra = await this.settingsService.getDormExtra();
+    const channelSecret =
+      extra.lineOaChannelSecret ?? process.env.LINE_CHANNEL_SECRET ?? '';
+    const raw = req?.rawBody ?? Buffer.from(JSON.stringify(body));
+    const expectedSignature = crypto
+      .createHmac('SHA256', channelSecret)
+      .update(raw)
+      .digest('base64');
 
-    // Basic Signature Validation
-    const channelSecret = process.env.LINE_CHANNEL_SECRET;
-    if (channelSecret) {
-      const raw = req?.rawBody ?? Buffer.from(JSON.stringify(body));
-      const expectedSignature = crypto
-        .createHmac('SHA256', channelSecret)
-        .update(raw)
-        .digest('base64');
-
-      // Prevent unused var error
-      if (signature !== expectedSignature) {
+    if (!channelSecret || signature !== expectedSignature) {
+      if (!channelSecret) {
+        this.logger.warn('LINE webhook: no channel secret (check LINE OA config or LINE_CHANNEL_SECRET)');
+      } else {
         this.logger.warn(
-          `Signature mismatch: received=${signature?.slice(0, 8) ?? 'none'} expected=${expectedSignature.slice(0, 8)}`,
+          `LINE webhook signature mismatch: received=${signature?.slice(0, 8) ?? 'none'}`,
         );
       }
+      throw new UnauthorizedException('Invalid signature');
     }
 
-    const events = body.events;
-    this.logger.log(`Webhook received: events=${events?.length ?? 0}`);
+    const events = body.events ?? [];
+    this.logger.log(`Webhook received: events=${events.length}`);
     await Promise.all(
       events.map((event) => this.lineService.handleEvent(event)),
     );

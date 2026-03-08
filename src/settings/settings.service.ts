@@ -3,8 +3,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { DormConfig } from '@prisma/client';
 import { UpdateDormConfigDto } from './dto/update-dorm-config.dto';
 import { DormExtraDto } from './dto/dorm-extra.dto';
+import { tenantContext } from '../tenant-db/tenant-context';
 import * as fs from 'fs';
 import * as path from 'path';
+
+const EXTRA_CACHE_KEY = '_dormExtra';
 
 @Injectable()
 export class SettingsService {
@@ -112,36 +115,48 @@ export class SettingsService {
 
   async updateDormConfig(data: UpdateDormConfigDto) {
     const existing = await this.prisma.dormConfig.findFirst();
+    const baseData: Record<string, unknown> = {
+      waterUnitPrice: data.waterUnitPrice ?? 18,
+      waterFeeMethod: data.waterFeeMethod,
+      waterFlatMonthlyFee: data.waterFlatMonthlyFee,
+      waterFlatPerPersonFee: data.waterFlatPerPersonFee,
+      waterMinAmount: data.waterMinAmount,
+      waterMinUnits: data.waterMinUnits,
+      waterBaseFee: data.waterBaseFee,
+      waterTieredRates: data.waterTieredRates,
+      electricUnitPrice: data.electricUnitPrice ?? 7,
+      electricFeeMethod: data.electricFeeMethod,
+      electricFlatMonthlyFee: data.electricFlatMonthlyFee,
+      electricMinAmount: data.electricMinAmount,
+      electricMinUnits: data.electricMinUnits,
+      electricBaseFee: data.electricBaseFee,
+      electricTieredRates: data.electricTieredRates,
+      commonFee: data.commonFee ?? 300,
+      dormName: data.dormName,
+      address: data.address,
+      phone: data.phone,
+      lineId: data.lineId,
+      bankAccount: data.bankAccount,
+      lineOaChannelId: data.lineOaChannelId,
+      lineOaChannelSecret: data.lineOaChannelSecret,
+      lineOaChannelAccessToken: data.lineOaChannelAccessToken,
+      liffId: data.liffId,
+      slipokApiKey: data.slipokApiKey,
+      slipokApiUrl: data.slipokApiUrl,
+      slipokBranchId: data.slipokBranchId,
+      logoUrl: data.logoUrl,
+      mapUrl: data.mapUrl,
+      lineLink: data.lineLink,
+      monthlyDueDay: data.monthlyDueDay,
+    };
     if (existing) {
       return this.prisma.dormConfig.update({
         where: { id: existing.id },
-        data,
+        data: baseData as Parameters<typeof this.prisma.dormConfig.update>[0]['data'],
       });
     }
     return this.prisma.dormConfig.create({
-      data: {
-        waterUnitPrice: data.waterUnitPrice ?? 18,
-        waterFeeMethod: data.waterFeeMethod ?? undefined,
-        waterFlatMonthlyFee: data.waterFlatMonthlyFee ?? undefined,
-        waterFlatPerPersonFee: data.waterFlatPerPersonFee ?? undefined,
-        waterMinAmount: data.waterMinAmount ?? undefined,
-        waterMinUnits: data.waterMinUnits ?? undefined,
-        waterBaseFee: data.waterBaseFee ?? undefined,
-        waterTieredRates: data.waterTieredRates ?? undefined,
-        electricUnitPrice: data.electricUnitPrice ?? 7,
-        electricFeeMethod: data.electricFeeMethod ?? undefined,
-        electricFlatMonthlyFee: data.electricFlatMonthlyFee ?? undefined,
-        electricMinAmount: data.electricMinAmount ?? undefined,
-        electricMinUnits: data.electricMinUnits ?? undefined,
-        electricBaseFee: data.electricBaseFee ?? undefined,
-        electricTieredRates: data.electricTieredRates ?? undefined,
-        commonFee: data.commonFee ?? 300,
-        dormName: data.dormName,
-        address: data.address,
-        phone: data.phone,
-        lineId: data.lineId,
-        bankAccount: data.bankAccount,
-      },
+      data: baseData as Parameters<typeof this.prisma.dormConfig.create>[0]['data'],
     });
   }
 
@@ -157,79 +172,71 @@ export class SettingsService {
     return path.join(uploadsDir, 'dorm-extra.json');
   }
 
-  getDormExtra(): DormExtraDto {
+  async getDormExtra(): Promise<DormExtraDto> {
+    const store = tenantContext.getStore();
+    if (store && (store as Record<string, unknown>)[EXTRA_CACHE_KEY]) {
+      return (store as Record<string, unknown>)[EXTRA_CACHE_KEY] as DormExtraDto;
+    }
+    // 1. Read from DormConfig (tenant DB) - per-tenant
+    const cfg = await this.getDormConfig();
+    if (cfg && (cfg.lineOaChannelAccessToken ?? cfg.slipokApiKey ?? cfg.liffId)) {
+      const out: DormExtraDto = {
+        logoUrl: cfg.logoUrl ?? undefined,
+        mapUrl: cfg.mapUrl ?? undefined,
+        lineLink: cfg.lineLink ?? undefined,
+        monthlyDueDay: cfg.monthlyDueDay ?? undefined,
+        lineOaChannelId: cfg.lineOaChannelId ?? process.env.LINE_CHANNEL_ID,
+        lineOaChannelSecret: cfg.lineOaChannelSecret ?? process.env.LINE_CHANNEL_SECRET,
+        lineOaChannelAccessToken: cfg.lineOaChannelAccessToken ?? process.env.LINE_CHANNEL_ACCESS_TOKEN,
+        slipokApiKey: cfg.slipokApiKey ?? process.env.SLIPOK_API_KEY,
+        slipokApiUrl: cfg.slipokApiUrl ?? (process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL),
+        slipokBranchId: cfg.slipokBranchId ?? process.env.SLIPOK_BRANCH_ID,
+        liffId: cfg.liffId ?? process.env.LIFF_ID,
+      };
+      if (store) (store as Record<string, unknown>)[EXTRA_CACHE_KEY] = out;
+      return out;
+    }
+    // 2. Fallback: file
     try {
       const p = this.getExtraFilePath();
-      // If file doesn't exist, try to create it with current ENV values
-      if (!fs.existsSync(p)) {
-         return {
-          lineOaChannelId: process.env.LINE_CHANNEL_ID,
-          lineOaChannelSecret: process.env.LINE_CHANNEL_SECRET,
-          lineOaChannelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-          slipokApiKey: process.env.SLIPOK_API_KEY,
-          slipokApiUrl: process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL,
-          slipokBranchId: process.env.SLIPOK_BRANCH_ID,
-         };
+      if (fs.existsSync(p)) {
+        const raw = fs.readFileSync(p, 'utf8');
+        const parsed = this.isRecord(JSON.parse(raw)) ? JSON.parse(raw) : {};
+        const out: DormExtraDto = {
+          logoUrl: this.pickString(parsed.logoUrl),
+          mapUrl: this.pickString(parsed.mapUrl),
+          lineLink: this.pickString(parsed.lineLink),
+          monthlyDueDay: Number.isFinite(Number(parsed.monthlyDueDay)) ? Number(parsed.monthlyDueDay) : undefined,
+          lineOaChannelId: this.pickString(parsed.lineOaChannelId) ?? process.env.LINE_CHANNEL_ID,
+          lineOaChannelSecret: this.pickString(parsed.lineOaChannelSecret) ?? process.env.LINE_CHANNEL_SECRET,
+          lineOaChannelAccessToken: this.pickString(parsed.lineOaChannelAccessToken) ?? process.env.LINE_CHANNEL_ACCESS_TOKEN,
+          slipokApiKey: this.pickString(parsed.slipokApiKey) ?? process.env.SLIPOK_API_KEY,
+          slipokApiUrl: this.pickString(parsed.slipokApiUrl) ?? (process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL),
+          slipokBranchId: this.pickString(parsed.slipokBranchId) ?? process.env.SLIPOK_BRANCH_ID,
+          liffId: this.pickString(parsed.liffId) ?? process.env.LIFF_ID,
+        };
+        if (store) (store as Record<string, unknown>)[EXTRA_CACHE_KEY] = out;
+        return out;
       }
-      
-      const raw = fs.readFileSync(p, 'utf8');
-      const parsedUnknown = JSON.parse(raw) as unknown;
-      const parsed = this.isRecord(parsedUnknown) ? parsedUnknown : {};
-      
-      // Prioritize JSON config, fallback to ENV only if JSON key is missing or undefined
-      // BUT if the user explicitly saves empty string, we might want to respect that?
-      // For now, let's assume we fallback to ENV if the value in JSON is missing.
-      // The requirement is "don't rely on env", so actually we should just return what's in JSON
-      // If JSON has it, use it. If not, use ENV as default.
-      
-      return {
-        logoUrl: typeof parsed.logoUrl === 'string' ? parsed.logoUrl : undefined,
-        mapUrl: typeof parsed.mapUrl === 'string' ? parsed.mapUrl : undefined,
-        lineLink: typeof parsed.lineLink === 'string' ? parsed.lineLink : undefined,
-        monthlyDueDay: Number.isFinite(Number(parsed.monthlyDueDay))
-          ? Number(parsed.monthlyDueDay)
-          : undefined,
-        
-        // Connection Configs
-        lineOaChannelId: typeof parsed.lineOaChannelId === 'string' 
-          ? parsed.lineOaChannelId 
-          : process.env.LINE_CHANNEL_ID,
-          
-        lineOaChannelSecret: typeof parsed.lineOaChannelSecret === 'string'
-          ? parsed.lineOaChannelSecret
-          : process.env.LINE_CHANNEL_SECRET,
-          
-        lineOaChannelAccessToken: typeof parsed.lineOaChannelAccessToken === 'string'
-          ? parsed.lineOaChannelAccessToken
-          : process.env.LINE_CHANNEL_ACCESS_TOKEN,
-          
-        slipokApiKey: typeof parsed.slipokApiKey === 'string'
-          ? parsed.slipokApiKey
-          : process.env.SLIPOK_API_KEY,
-          
-        slipokApiUrl: typeof parsed.slipokApiUrl === 'string'
-          ? parsed.slipokApiUrl
-          : (process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL),
-          
-        slipokBranchId: typeof parsed.slipokBranchId === 'string'
-          ? parsed.slipokBranchId
-          : process.env.SLIPOK_BRANCH_ID,
-      };
     } catch {
-      return {
-        lineOaChannelId: process.env.LINE_CHANNEL_ID,
-        lineOaChannelSecret: process.env.LINE_CHANNEL_SECRET,
-        lineOaChannelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-        slipokApiKey: process.env.SLIPOK_API_KEY,
-        slipokApiUrl: process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL,
-        slipokBranchId: process.env.SLIPOK_BRANCH_ID,
-      };
+      /* ignore */
     }
+    // 3. Fallback: ENV
+    const out: DormExtraDto = {
+      lineOaChannelId: process.env.LINE_CHANNEL_ID,
+      lineOaChannelSecret: process.env.LINE_CHANNEL_SECRET,
+      lineOaChannelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+      slipokApiKey: process.env.SLIPOK_API_KEY,
+      slipokApiUrl: process.env.SLIPOK_API_URL || process.env.SLIPOK_CHECK_URL,
+      slipokBranchId: process.env.SLIPOK_BRANCH_ID,
+      liffId: process.env.LIFF_ID,
+    };
+    if (store) (store as Record<string, unknown>)[EXTRA_CACHE_KEY] = out;
+    return out;
   }
 
-  updateDormExtra(data: DormExtraDto): DormExtraDto {
-    const p = this.getExtraFilePath();
-    const current = this.getDormExtra();
+  async updateDormExtra(data: DormExtraDto): Promise<DormExtraDto> {
+    const current = await this.getDormExtra();
     const next: DormExtraDto = {
       ...current,
       logoUrl: data.logoUrl ?? current.logoUrl,
@@ -239,24 +246,41 @@ export class SettingsService {
         ? Number(data.monthlyDueDay)
         : current.monthlyDueDay,
       lineOaChannelId: data.lineOaChannelId ?? current.lineOaChannelId,
-      lineOaChannelSecret:
-        data.lineOaChannelSecret ?? current.lineOaChannelSecret,
-      lineOaChannelAccessToken:
-        data.lineOaChannelAccessToken ?? current.lineOaChannelAccessToken,
+      lineOaChannelSecret: data.lineOaChannelSecret ?? current.lineOaChannelSecret,
+      lineOaChannelAccessToken: data.lineOaChannelAccessToken ?? current.lineOaChannelAccessToken,
       slipokApiKey: data.slipokApiKey ?? current.slipokApiKey,
       slipokApiUrl: data.slipokApiUrl ?? current.slipokApiUrl,
       slipokBranchId: data.slipokBranchId ?? current.slipokBranchId,
+      liffId: data.liffId ?? current.liffId,
     };
-    try {
-      // Ensure directory exists
-      const dir = path.dirname(p);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to save dorm extra:', e);
-      return next;
+    const existing = await this.prisma.dormConfig.findFirst();
+    const updateData = {
+      logoUrl: next.logoUrl,
+      mapUrl: next.mapUrl,
+      lineLink: next.lineLink,
+      monthlyDueDay: next.monthlyDueDay,
+      lineOaChannelId: next.lineOaChannelId,
+      lineOaChannelSecret: next.lineOaChannelSecret,
+      lineOaChannelAccessToken: next.lineOaChannelAccessToken,
+      slipokApiKey: next.slipokApiKey,
+      slipokApiUrl: next.slipokApiUrl,
+      slipokBranchId: next.slipokBranchId,
+      liffId: next.liffId,
+    };
+    if (existing) {
+      await this.prisma.dormConfig.update({
+        where: { id: existing.id },
+        data: updateData,
+      });
+    } else {
+      await this.prisma.dormConfig.create({
+        data: {
+          ...updateData,
+          waterUnitPrice: 18,
+          electricUnitPrice: 7,
+          commonFee: 300,
+        },
+      });
     }
     return next;
   }

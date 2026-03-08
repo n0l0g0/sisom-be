@@ -40,4 +40,8 @@ export class DormExtraDto {
   @IsOptional()
   @IsString()
   slipokBranchId?: string;
+
+  @IsOptional()
+  @IsString()
+  liffId?: string;
 }

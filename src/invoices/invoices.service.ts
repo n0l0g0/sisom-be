@@ -345,7 +345,7 @@ export class InvoicesService implements OnModuleInit {
       throw new BadRequestException('Invoice already exists for this period');
     }
 
-    const dormExtra = this.settingsService.getDormExtra();
+    const dormExtra = await this.settingsService.getDormExtra();
     const monthlyDueDay = Number.isFinite(Number(dormExtra?.monthlyDueDay))
       ? Number(dormExtra?.monthlyDueDay)
       : 5;
@@ -617,6 +617,97 @@ export class InvoicesService implements OnModuleInit {
       },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /** รายงานสรุปห้องค้างชำระ (สำหรับพิมพ์) - หมายเหตุใส่วันที่นัดชำระเฉพาะเมื่อห้องมีกำหนด */
+  async getOutstandingReport(month: number, year: number) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: { month, year },
+      include: {
+        contract: {
+          select: {
+            roomId: true,
+            room: {
+              select: {
+                number: true,
+                building: { select: { name: true, code: true } },
+              },
+            },
+            tenant: { select: { name: true } },
+          },
+        },
+        payments: {
+          where: { status: PaymentStatus.VERIFIED },
+          select: { amount: true },
+        },
+      },
+    });
+
+    const schedules = this.readSchedulesStore();
+    const rows: {
+      roomNumber: string;
+      buildingName: string;
+      tenantName: string;
+      status: string;
+      totalDue: number;
+      dueDateNote: string | null;
+    }[] = [];
+
+    for (const inv of invoices) {
+      const totalAmount = Number(inv.totalAmount);
+      const paidSum = inv.payments.reduce((s, p) => s + Number(p.amount), 0);
+      const totalDue = Math.max(0, this.round(totalAmount - paidSum));
+      if (totalDue <= 0) continue;
+
+      const roomNumber = inv.contract?.room?.number ?? '-';
+      const building = inv.contract?.room?.building;
+      const buildingName =
+        building?.name || building?.code || '-';
+      const tenantName = inv.contract?.tenant?.name ?? '-';
+      const roomId = inv.contract?.roomId;
+      let dueDateNote: string | null = null;
+      if (roomId && schedules[roomId]) {
+        const s = schedules[roomId];
+        if (typeof s.monthlyDay === 'number') {
+          dueDateNote = `ทุกวันที่ ${s.monthlyDay}`;
+        } else if (typeof s.oneTimeDate === 'string' && s.oneTimeDate) {
+          try {
+            const d = new Date(s.oneTimeDate);
+            if (!isNaN(d.getTime())) {
+              dueDateNote = d.toLocaleDateString('th-TH', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              });
+            }
+          } catch {
+            dueDateNote = null;
+          }
+        }
+      }
+      rows.push({
+        roomNumber,
+        buildingName,
+        tenantName,
+        status: 'ค้างชำระ',
+        totalDue,
+        dueDateNote,
+      });
+    }
+
+    rows.sort((a, b) => {
+      const buildingCmp = (a.buildingName || '').localeCompare(b.buildingName || '');
+      if (buildingCmp !== 0) return buildingCmp;
+      return a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true });
+    });
+
+    const totalSum = rows.reduce((s, r) => s + r.totalDue, 0);
+    const monthLabel = new Date(year, month - 1).toLocaleDateString('th-TH', {
+      month: 'long',
+      year: 'numeric',
+    });
+
+    return { month, year, monthLabel, rows, totalSum };
   }
 
   findByIds(ids: string[]) {
