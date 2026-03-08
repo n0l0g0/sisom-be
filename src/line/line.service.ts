@@ -1872,8 +1872,13 @@ export class LineService implements OnModuleInit {
         if (!this.isStaffUser(userId)) return null;
         const payload = data.split('=')[1] || '';
         if (payload === 'BUILDINGS') {
-          const buildings = await this.prisma.building.findMany({
-            orderBy: { name: 'asc' },
+          const buildings = await this.prisma.building.findMany();
+          buildings.sort((a, b) => {
+            const nameA = a.name || '';
+            const nameB = b.name || '';
+            if (nameA === 'บ้านน้อย' && nameB !== 'บ้านน้อย') return 1;
+            if (nameB === 'บ้านน้อย' && nameA !== 'บ้านน้อย') return -1;
+            return nameA.localeCompare(nameB, undefined, { numeric: true });
           });
           if (buildings.length === 0) {
             await this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
@@ -2971,8 +2976,13 @@ export class LineService implements OnModuleInit {
       }
       this.staffPaymentState.set(userId || '', {});
       this.startStaffPaymentTimer(userId || '');
-      const buildings = await this.prisma.building.findMany({
-        orderBy: { name: 'asc' },
+      const buildings = await this.prisma.building.findMany();
+      buildings.sort((a, b) => {
+        const nameA = a.name || '';
+        const nameB = b.name || '';
+        if (nameA === 'บ้านน้อย' && nameB !== 'บ้านน้อย') return 1;
+        if (nameB === 'บ้านน้อย' && nameA !== 'บ้านน้อย') return -1;
+        return nameA.localeCompare(nameB, undefined, { numeric: true });
       });
       if (buildings.length === 0) {
         return this.replyText(event.replyToken, 'ยังไม่มีข้อมูลตึก');
