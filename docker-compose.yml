@@ -3,6 +3,8 @@ services:
   backend:
     build: .
     container_name: sisom-backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "3010:3000"
     env_file:
@@ -10,17 +12,30 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - DATABASE_URL=postgresql://admin:password@172.18.0.1:5433/sisomapt?schema=public
+      - OWNER_API_URL=http://owner13rent-backend:3000
     volumes:
       - /root/uploads:/app/uploads
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
       interval: 1m30s
       timeout: 10s
       retries: 3
     networks:
       - sisom-be_default
       - sisomapt-be_default
+
+  cms-gateway:
+    build: ./cms-gateway
+    container_name: cms-gateway
+    environment:
+      - PORT=3011
+      - TARGET_URL=http://sisom-backend:3000
+      - JWT_SECRET=${JWT_SECRET:-supersecretkey}
+    restart: unless-stopped
+    networks:
+      - sisom-be_default
 
 networks:
   sisom-be_default:

@@ -10,6 +10,7 @@ import { ContractsModule } from './contracts/contracts.module';
 import { LineModule } from './line/line.module';
 import { MaintenanceModule } from './maintenance/maintenance.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { TenantDbModule } from './tenant-db/tenant-db.module';
 import { AuthModule } from './auth/auth.module';
 import { SettingsModule } from './settings/settings.module';
 import { UsersModule } from './users/users.module';
@@ -21,6 +22,7 @@ import { ActivityModule } from './activity/activity.module';
 
 @Module({
   imports: [
+    TenantDbModule,
     PrismaModule,
     AuthModule,
     RoomsModule,
