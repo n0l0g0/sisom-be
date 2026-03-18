@@ -1415,6 +1415,7 @@ export class InvoicesService implements OnModuleInit {
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
     return Array.from(new Set(targets));
   }
+
   async notifyPaymentSchedules() {
     const now = new Date();
     const todayDateStr = now.toISOString().slice(0, 10);
@@ -1482,7 +1483,7 @@ export class InvoicesService implements OnModuleInit {
         `ประจำเดือน ${monthText}`,
         `กรุณาชำระตามกำหนดวันนี้`,
       ].join('\n');
-      
+
       // Staff Flex Message
       const staffFlex = {
         type: 'flex',

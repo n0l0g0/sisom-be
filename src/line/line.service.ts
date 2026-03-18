@@ -214,7 +214,21 @@ export class LineService implements OnModuleInit {
     { displayName: string; pictureUrl?: string; updatedAt: number }
   >();
 
-  private async getLineNotifyTargets(): Promise<string[]> {
+  /** Permission keys for granular LINE staff notifications. Having 'line_notifications' grants all. */
+  static readonly LINE_NOTIFY_PERMISSIONS = {
+    PAYMENT_VERIFIED: 'line_notify_payment_verified',
+    PAYMENT_SUCCESS: 'line_notify_payment_success',
+    MAINTENANCE_CREATED: 'line_notify_maintenance_created',
+    MOVEOUT_CREATED: 'line_notify_moveout_created',
+  } as const;
+
+  private hasLineNotifyPermission(perms: string[], permission: string): boolean {
+    return (
+      perms.includes(permission) || perms.includes('line_notifications')
+    );
+  }
+
+  private async getLineNotifyTargets(permission: string): Promise<string[]> {
     const users = await this.prisma.user.findMany({
       where: {
         role: { in: [Role.ADMIN, Role.OWNER] },
@@ -224,8 +238,8 @@ export class LineService implements OnModuleInit {
     });
     const targets = users
       .filter((u) => {
-        const perms = Array.isArray(u.permissions) ? u.permissions : [];
-        return perms.includes('line_notifications');
+        const perms = Array.isArray(u.permissions) ? (u.permissions as string[]) : [];
+        return this.hasLineNotifyPermission(perms, permission);
       })
       .map((u) => u.lineUserId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
@@ -769,7 +783,9 @@ export class LineService implements OnModuleInit {
         // No footer buttons for staff notification; this is a passive alert only
       },
     };
-    const targets = await this.getLineNotifyTargets();
+    const targets = await this.getLineNotifyTargets(
+      LineService.LINE_NOTIFY_PERMISSIONS.MAINTENANCE_CREATED,
+    );
     for (const uid of targets) {
       if (!uid) continue;
       await this.pushFlex(uid, flex);
@@ -793,23 +809,23 @@ export class LineService implements OnModuleInit {
 
     const buildingPart = data.buildingLabel ? `${data.buildingLabel} /` : '';
     let message = '';
-    
+
     const amountStr = data.amount.toLocaleString('th-TH', {
       minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     });
-    
+
     if (data.type === 'NEW') {
       message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ ยอด ${amountStr} บาท แล้วครับ`;
     } else {
       message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} ยอด ${amountStr} บาท แล้วครับ`;
     }
 
+    const permKey = LineService.LINE_NOTIFY_PERMISSIONS.PAYMENT_VERIFIED;
     for (const s of staff) {
       if (!s.lineUserId) continue;
-      
       const permissions = Array.isArray(s.permissions) ? (s.permissions as string[]) : [];
-      if (!permissions.includes('line_notifications')) continue;
+      if (!this.hasLineNotifyPermission(permissions, permKey)) continue;
 
       try {
         await this.pushMessage(s.lineUserId, message);
@@ -880,7 +896,9 @@ export class LineService implements OnModuleInit {
         },
       },
     };
-    const targets = await this.getLineNotifyTargets();
+    const targets = await this.getLineNotifyTargets(
+      LineService.LINE_NOTIFY_PERMISSIONS.MOVEOUT_CREATED,
+    );
     for (const uid of targets) {
       if (!uid) continue;
       await this.pushFlex(uid, flex);
@@ -6309,7 +6327,9 @@ export class LineService implements OnModuleInit {
     const msg = [`แจ้งเตือนห้องที่จะย้ายออกในวันที่ ${target}`, ...lines].join(
       '\n',
     );
-    const targets = await this.getLineNotifyTargets();
+    const targets = await this.getLineNotifyTargets(
+      LineService.LINE_NOTIFY_PERMISSIONS.MOVEOUT_CREATED,
+    );
     for (const uid of targets) {
       if (uid) {
         await this.pushMessage(uid, msg);
@@ -6993,7 +7013,9 @@ export class LineService implements OnModuleInit {
     paidAt?: Date;
     tenantName?: string;
   }) {
-    const targets = await this.getLineNotifyTargets();
+    const targets = await this.getLineNotifyTargets(
+      LineService.LINE_NOTIFY_PERMISSIONS.PAYMENT_SUCCESS,
+    );
     if (!targets.length) return;
     const paidAt = params.paidAt || new Date();
     const whenStr = paidAt.toLocaleString('th-TH', {
