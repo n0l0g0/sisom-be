@@ -2402,12 +2402,6 @@ export class LineService implements OnModuleInit {
           'คุณมีรายการที่ยังไม่เสร็จ กรุณาทำรายการเดิมให้เสร็จก่อน หรือรอ 3 นาทีให้หมดเวลา',
         );
       }
-      if (this.isStaffUser(userId)) {
-        return this.replyText(
-          event.replyToken,
-          'คำสั่งแจ้งซ่อมสำหรับผู้เช่าเท่านั้น',
-        );
-      }
       if (!userId) {
         return this.replyText(
           event.replyToken,
@@ -3035,12 +3029,6 @@ export class LineService implements OnModuleInit {
         return this.replyText(
           event.replyToken,
           'คุณมีรายการที่ยังไม่เสร็จ กรุณาทำรายการเดิมให้เสร็จก่อน หรือรอ 3 นาทีให้หมดเวลา',
-        );
-      }
-      if (this.isStaffUser(userId)) {
-        return this.replyText(
-          event.replyToken,
-          'คำสั่งแจ้งย้ายออกสำหรับผู้เช่า เจ้าหน้าที่ให้ใช้คำสั่ง แจ้งย้าย',
         );
       }
       if (!userId) {
