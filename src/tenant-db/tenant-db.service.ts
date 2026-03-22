@@ -2,6 +2,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 const OWNER_API = process.env.OWNER_API_URL || 'http://owner13rent-backend:3000';
+const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || '';
 
 interface TenantConfig {
   url: string;
@@ -17,7 +18,11 @@ export class TenantDbService implements OnModuleDestroy {
       return tenantClients.get(tenantId)!;
     }
     const res = await fetch(`${OWNER_API}/api/tenants/${tenantId}/connection-url`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // owner13rent exposes this endpoint behind InternalApiKeyGuard
+        'x-internal-api-key': INTERNAL_API_KEY,
+      },
     });
     if (!res.ok) {
       const text = await res.text();
