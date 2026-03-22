@@ -1697,8 +1697,8 @@ export class LineService implements OnModuleInit {
           requestedAt: new Date(),
         };
         this.moveOutRequests.set(userId, { ...prev, days });
-        await this.pushMessage(
-          userId,
+        await this.replyText(
+          event.replyToken,
           `บันทึกกำหนดโอนคืนเงินประกันภายใน ${days} วันเรียบร้อย\nกรุณาส่งข้อมูลบัญชีเพื่อรับเงินคืนในรูปแบบ:\nชื่อ-นามสกุล: ...\nเบอร์โทรศัพท์: ...\nเลขบัญชี: ...\nธนาคาร: ...`,
         );
         return null;
@@ -1787,7 +1787,7 @@ export class LineService implements OnModuleInit {
             },
           },
         };
-        await this.pushFlex(userId, message);
+        await this.replyFlex(event.replyToken, message);
         return null;
       }
       if (userId && data.startsWith('PAY_FLOOR=')) {
@@ -1882,7 +1882,7 @@ export class LineService implements OnModuleInit {
             },
           },
         };
-        await this.pushFlex(userId, message);
+        await this.replyFlex(event.replyToken, message);
         return null;
       }
       if (userId && data.startsWith('PAY_BACK=')) {
@@ -1932,7 +1932,7 @@ export class LineService implements OnModuleInit {
               },
             },
           };
-          await this.pushFlex(userId, message);
+          await this.replyFlex(event.replyToken, message);
           return null;
         }
         if (payload.startsWith('FLOORS:')) {
@@ -1988,7 +1988,7 @@ export class LineService implements OnModuleInit {
               },
             },
           };
-          await this.pushFlex(userId, message);
+          await this.replyFlex(event.replyToken, message);
           return null;
         }
         return null;
@@ -2015,8 +2015,8 @@ export class LineService implements OnModuleInit {
           include: { room: true },
         });
         if (!contract) {
-          await this.pushMessage(
-            userId,
+          await this.replyText(
+            event.replyToken,
             'ไม่พบสัญญาที่ใช้งานอยู่สำหรับห้องนี้',
           );
           return null;
@@ -2036,7 +2036,7 @@ export class LineService implements OnModuleInit {
           orderBy: { createdAt: 'desc' },
         });
         if (!invoice) {
-          await this.pushMessage(userId, 'ไม่มีบิลค้างชำระสำหรับห้องนี้');
+          await this.replyText(event.replyToken, 'ไม่มีบิลค้างชำระสำหรับห้องนี้');
           return null;
         }
         this.setPaymentContextWithTimeout(userId, invoice.id);
@@ -2051,7 +2051,7 @@ export class LineService implements OnModuleInit {
           accountName: '',
           accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
         });
-        await this.pushFlex(userId, flex);
+        await this.replyFlex(event.replyToken, flex);
         return null;
       }
       // Move-out flow
@@ -2115,7 +2115,7 @@ export class LineService implements OnModuleInit {
             },
           },
         };
-        await this.pushFlex(userId, message);
+        await this.replyFlex(event.replyToken, message);
         return null;
       }
       if (userId && data.startsWith('MO_FLOOR=')) {
@@ -2187,7 +2187,7 @@ export class LineService implements OnModuleInit {
             },
           },
         };
-        await this.pushFlex(userId, message);
+        await this.replyFlex(event.replyToken, message);
         return null;
       }
       if (userId && data.startsWith('MO_ROOM=')) {
@@ -2222,10 +2222,8 @@ export class LineService implements OnModuleInit {
           contractId: contract.id,
           step: 'WATER',
         });
-        const infoText = `แจ้งย้ายออก ห้อง ${contract.room?.number} ${contract.room?.building?.name || contract.room?.building?.code || '-'} ชั้น ${contract.room?.floor}\nผู้เช่า: ${contract.tenant?.name || '-'} โทร ${contract.tenant?.phone || '-'}`;
-        await this.pushMessage(userId, infoText);
-        const bankText = 'กรุณากรอกข้อมูลบัญชีธนาคารของผู้เช่า';
-        await this.pushMessage(userId, bankText);
+        const infoText = `แจ้งย้ายออก ห้อง ${contract.room?.number} ${contract.room?.building?.name || contract.room?.building?.code || '-'} ชั้น ${contract.room?.floor}\nผู้เช่า: ${contract.tenant?.name || '-'} โทร ${contract.tenant?.phone || '-'}\n\nกรุณากรอกข้อมูลบัญชีธนาคารของผู้เช่า`;
+        await this.replyText(event.replyToken, infoText);
         return null;
       }
       return Promise.resolve(null);
@@ -2321,8 +2319,8 @@ export class LineService implements OnModuleInit {
           bank: undefined,
         };
         this.moveOutRequests.set(userId2, { ...prev, bankInfo });
-        await this.pushMessage(
-          userId2,
+        await this.replyText(
+          event.replyToken,
           'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ\nจากนั้นกรุณาส่งรูปมิเตอร์น้ำ',
         );
         this.startMoveoutTimer(userId2);
@@ -2853,8 +2851,7 @@ export class LineService implements OnModuleInit {
         altText: 'อัตราค่าน้ำ ค่าไฟ',
         contents: ratesBubble,
       };
-      await this.replyFlex(event.replyToken, priceMessage);
-      if (userId) await this.pushFlex(userId, ratesMessage);
+      await this.replyFlexMany(event.replyToken, [priceMessage, ratesMessage]);
       return null;
     }
     if (text.includes('รูปห้องพัก')) {
@@ -3450,7 +3447,7 @@ export class LineService implements OnModuleInit {
         accountName: '',
         accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
       });
-      await this.pushFlex(userId, flex);
+      await this.replyFlex(event.replyToken, flex);
       return null;
     }
 
@@ -3744,8 +3741,7 @@ export class LineService implements OnModuleInit {
         altText: 'อัตราค่าน้ำ ค่าไฟ',
         contents: ratesBubble,
       };
-      await this.replyFlex(event.replyToken, priceMessage);
-      if (userId) await this.pushFlex(userId, ratesMessage);
+      await this.replyFlexMany(event.replyToken, [priceMessage, ratesMessage]);
       return null;
     }
     if (userId && this.registerPhoneContext.get(userId)) {
@@ -3812,14 +3808,11 @@ export class LineService implements OnModuleInit {
           ],
         },
       };
-      const r = await this.replyFlex(event.replyToken, message);
-      if (userId) {
-        await this.pushMessage(
-          userId,
-          'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด',
-        );
-      }
-      return r;
+      await this.replyFlexMany(event.replyToken, [
+        message,
+        { type: 'text', text: 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด' },
+      ]);
+      return null;
     }
 
     if (/ชื่อ-นามสกุล\s*:/i.test(text) && /เลขบัญชี\s*:/i.test(text)) {
@@ -3841,14 +3834,14 @@ export class LineService implements OnModuleInit {
         this.moveOutRequests.set(userId2, { ...prev, bankInfo });
         const staffMoveout = this.moveoutState.get(userId2);
         if (staffMoveout?.step) {
-          await this.pushMessage(
-            userId2,
+          await this.replyText(
+            event.replyToken,
             'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ\nจากนั้นกรุณาส่งรูปมิเตอร์น้ำ',
           );
           this.startMoveoutTimer(userId2);
         } else {
-          await this.pushMessage(
-            userId2,
+          await this.replyText(
+            event.replyToken,
             'รับข้อมูลบัญชีเรียบร้อย ขอบคุณค่ะ/ครับ',
           );
         }
@@ -4078,13 +4071,10 @@ export class LineService implements OnModuleInit {
         accountName: '',
         accountNo: config?.bankAccount || 'ไม่พบข้อมูลบัญชี',
       });
-      await this.replyFlex(event.replyToken, flex);
-      if (userId) {
-        await this.pushMessage(
-          userId,
-          'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด',
-        );
-      }
+      await this.replyFlexMany(event.replyToken, [
+        flex,
+        { type: 'text', text: 'โปรดส่งสลิปเพื่อให้ระบบตรวจสอบและตัดยอด' },
+      ]);
       return null;
     }
 
@@ -4744,11 +4734,10 @@ export class LineService implements OnModuleInit {
           },
         },
       };
-      await this.pushFlex(userId, summaryFlex);
-      await this.replyText(
-        event.replyToken,
-        'บันทึกรูปมิเตอร์น้ำ/ไฟ เรียบร้อย',
-      );
+      await this.replyFlexMany(event.replyToken, [
+        summaryFlex,
+        { type: 'text', text: 'บันทึกรูปมิเตอร์น้ำ/ไฟ เรียบร้อย' },
+      ]);
       return imgUrl;
     }
     await this.replyText(event.replyToken, 'ขั้นตอนไม่ถูกต้อง กรุณาเริ่มใหม่');
