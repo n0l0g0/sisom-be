@@ -2291,13 +2291,10 @@ export class LineService implements OnModuleInit {
         );
         return;
       }
-      const baseUrl =
-        process.env.PUBLIC_API_URL ||
-        process.env.INTERNAL_API_URL ||
-        process.env.API_URL ||
-        'https://line-sisom.washqueue.com';
-      const appBase = baseUrl.replace(/\/+$/, '');
-      const meterUrl = `${appBase}/meter?uid=${encodeURIComponent(userId)}`;
+      const frontendBase =
+        process.env.FRONTEND_URL ||
+        'https://cms.washqueue.com';
+      const meterUrl = `${frontendBase.replace(/\/+$/, '')}/th/meter?uid=${encodeURIComponent(userId)}`;
       await this.replyText(
         event.replyToken,
         `เปิดหน้าจดมิเตอร์ได้ที่\n${meterUrl}`,
