@@ -8,5 +8,6 @@ import { SettingsModule } from '../settings/settings.module';
   imports: [LineModule, SettingsModule],
   controllers: [InvoicesController],
   providers: [InvoicesService],
+  exports: [InvoicesService],
 })
 export class InvoicesModule {}

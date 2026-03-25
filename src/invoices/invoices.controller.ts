@@ -98,6 +98,11 @@ export class InvoicesController {
     return this.invoicesService.settle(id, method, paidAt);
   }
 
+  @Post(':id/unsettle')
+  unsettleOne(@Param('id') id: string) {
+    return this.invoicesService.unsettle(id);
+  }
+
   @Post(':id/cancel')
   cancel(@Param('id') id: string) {
     return this.invoicesService.cancel(id);
@@ -146,6 +151,14 @@ export class InvoicesController {
       Number(payload.month),
       Number(payload.year),
       String(payload.roomId),
+    );
+  }
+
+  @Post('recalculate-month')
+  recalculateMonth(@Body() payload: { month: number; year: number }) {
+    return this.invoicesService.recalculateMonth(
+      Number(payload.month),
+      Number(payload.year),
     );
   }
 

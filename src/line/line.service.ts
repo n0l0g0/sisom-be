@@ -4018,7 +4018,7 @@ export class LineService implements OnModuleInit {
         invoice = await this.prisma.invoice.findFirst({
           where: {
             contractId: { in: contractIds },
-            status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+            status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
           },
           orderBy: { createdAt: 'desc' },
         });
@@ -4127,8 +4127,13 @@ export class LineService implements OnModuleInit {
           'ยังไม่มีใบแจ้งหนี้สำหรับห้องของคุณ',
         );
       }
-      const unpaidInvoices = allInvoices.filter(
-        (inv) => inv.status === 'SENT' || inv.status === 'OVERDUE',
+      const unpaidStatuses: InvoiceStatus[] = [
+        InvoiceStatus.DRAFT,
+        InvoiceStatus.SENT,
+        InvoiceStatus.OVERDUE,
+      ];
+      const unpaidInvoices = allInvoices.filter((inv) =>
+        unpaidStatuses.includes(inv.status as InvoiceStatus),
       );
       if (unpaidInvoices.length === 0) {
         return this.replyText(
@@ -5661,7 +5666,7 @@ export class LineService implements OnModuleInit {
         invoice &&
         !isStaff &&
         !(
-          [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] as InvoiceStatus[]
+            [InvoiceStatus.DRAFT, InvoiceStatus.SENT, InvoiceStatus.OVERDUE] as InvoiceStatus[]
         ).includes(invoice.status)
       ) {
         invoice = null;
@@ -5677,7 +5682,11 @@ export class LineService implements OnModuleInit {
           where: {
             contractId: contract.id,
             status: {
-              in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE],
+                in: [
+                  InvoiceStatus.DRAFT,
+                  InvoiceStatus.SENT,
+                  InvoiceStatus.OVERDUE,
+                ],
             },
           },
           orderBy: { createdAt: 'desc' },
@@ -5691,7 +5700,11 @@ export class LineService implements OnModuleInit {
             where: {
               contractId: state.contractId,
               status: {
-                in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE],
+                  in: [
+                    InvoiceStatus.DRAFT,
+                    InvoiceStatus.SENT,
+                    InvoiceStatus.OVERDUE,
+                  ],
               },
             },
             orderBy: { createdAt: 'desc' },
@@ -5718,7 +5731,13 @@ export class LineService implements OnModuleInit {
             invoice = await this.prisma.invoice.findFirst({
               where: {
                 contractId: contract2.id,
-                status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+                  status: {
+                    in: [
+                      InvoiceStatus.DRAFT,
+                      InvoiceStatus.SENT,
+                      InvoiceStatus.OVERDUE,
+                    ],
+                  },
               },
               orderBy: { createdAt: 'desc' },
               include: {
@@ -5743,7 +5762,13 @@ export class LineService implements OnModuleInit {
           // Last resort: pick latest unpaid invoice across all contracts
           invoice = await this.prisma.invoice.findFirst({
             where: {
-              status: { in: [InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+                status: {
+                  in: [
+                    InvoiceStatus.DRAFT,
+                    InvoiceStatus.SENT,
+                    InvoiceStatus.OVERDUE,
+                  ],
+                },
             },
             orderBy: { createdAt: 'desc' },
             include: { payments: true, contract: { include: { room: { include: { building: true } } } } },

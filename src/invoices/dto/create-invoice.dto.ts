@@ -49,6 +49,14 @@ export class CreateInvoiceDto {
   @IsNumber()
   discount?: number;
 
+  @IsOptional()
+  @IsString()
+  discountNote?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
   @IsNotEmpty()
   @IsNumber()
   totalAmount: number;

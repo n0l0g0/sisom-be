@@ -32,8 +32,294 @@ export class InvoicesService implements OnModuleInit {
     private settingsService: SettingsService,
   ) {}
 
+  private computeNextRetryAtByQuota(now = new Date()): string {
+    // LINE quota มักรีเซ็ตแบบรายวัน: ให้รีลองพรุ่งนี้ 00:00 (ระบบ/DB ฝั่งนี้ใช้เวลา server เป็นหลัก)
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+
+  private buildLineQuotaRetryMessage(nextRetryAtIso: string): string {
+    const d = new Date(nextRetryAtIso);
+    const dateStr = d.toLocaleDateString('th-TH', {
+      timeZone: 'Asia/Bangkok',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const timeStr = d.toLocaleTimeString('th-TH', {
+      timeZone: 'Asia/Bangkok',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    return `โควต้า LINE หมดชั่วคราว กรุณากดส่งอีกครั้งในวันที่ ${dateStr} เวลา ${timeStr} เพื่อแจ้งเตือนผู้เช่าได้ค่ะ/ครับ`;
+  }
+
+  private isLineQuotaOrRateLimitError(err: unknown): boolean {
+    const msg = String((err as any)?.message || err || '').toLowerCase();
+    const status =
+      (err as any)?.statusCode ??
+      (err as any)?.status ??
+      (err as any)?.response?.status ??
+      (err as any)?.response?.statusCode;
+
+    if (status === 429) return true;
+    if (/rate limit|too many requests|quota|โควต้า|exceeded|limit_rpm|limit.*rpm|insufficient.*balance/.test(msg)) {
+      return true;
+    }
+    return false;
+  }
+
   private round(num: number): number {
     return Math.round((num + Number.EPSILON) * 100) / 100;
+  }
+
+  private computeTieredAmount(
+    usage: number,
+    unitPrice: number,
+    tiers?: Array<{
+      uptoUnit?: number | null;
+      unitPrice: number;
+      chargeType?: 'PER_UNIT' | 'FLAT';
+    }>,
+  ): number {
+    const list = Array.isArray(tiers) ? tiers : [];
+    if (!list.length) return usage * unitPrice;
+    const normalized = list
+      .map((t) => ({
+        uptoUnit:
+          t.uptoUnit === null || t.uptoUnit === undefined
+            ? undefined
+            : Number(t.uptoUnit),
+        unitPrice: Math.max(0, Number(t.unitPrice ?? 0)),
+        chargeType: t.chargeType === 'FLAT' ? 'FLAT' : 'PER_UNIT',
+      }))
+      .filter((t) => t.unitPrice > 0);
+    const finite = normalized
+      .filter((t) => t.uptoUnit !== undefined)
+      .sort((a, b) => (a.uptoUnit as number) - (b.uptoUnit as number));
+    const infinite = normalized.filter((t) => t.uptoUnit === undefined);
+    const ordered = [...finite, ...infinite];
+    let remaining = Math.max(0, usage);
+    let previousUpto = 0;
+    let total = 0;
+    for (const tier of ordered) {
+      if (remaining <= 0) break;
+      const upto = tier.uptoUnit ?? Number.POSITIVE_INFINITY;
+      const rangeSize = Math.max(0, upto - previousUpto);
+      const tierUnits = Number.isFinite(upto)
+        ? Math.min(remaining, rangeSize)
+        : remaining;
+      if (tier.chargeType === 'FLAT') {
+        if (tierUnits > 0) total += tier.unitPrice;
+      } else {
+        total += tierUnits * tier.unitPrice;
+      }
+      remaining -= tierUnits;
+      previousUpto = Number.isFinite(upto) ? upto : previousUpto;
+    }
+    return total;
+  }
+
+  async recalculateInvoice(invoiceId: string) {
+    const inv = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        contract: {
+          include: {
+            room: true,
+          },
+        },
+        items: true,
+      },
+    });
+    if (!inv) throw new NotFoundException('Invoice not found');
+    if (inv.status === InvoiceStatus.CANCELLED || inv.status === InvoiceStatus.PAID) {
+      return { id: inv.id, skipped: true };
+    }
+
+    const roomId = inv.contract?.roomId;
+    if (!roomId) return { id: inv.id, skipped: true };
+
+    const currentReading = await this.prisma.meterReading.findFirst({
+      where: { roomId, month: inv.month, year: inv.year },
+    });
+    let pm = inv.month - 1;
+    let py = inv.year;
+    if (pm <= 0) {
+      pm = 12;
+      py -= 1;
+    }
+    const prevReading = await this.prisma.meterReading.findFirst({
+      where: { roomId, month: pm, year: py },
+    });
+
+    const electricUsage =
+      currentReading && prevReading
+        ? Math.max(
+            0,
+            Number(currentReading.electricReading) -
+              Number(prevReading.electricReading),
+          )
+        : 0;
+    const waterUsage =
+      currentReading && prevReading
+        ? Math.max(
+            0,
+            Number(currentReading.waterReading) - Number(prevReading.waterReading),
+          )
+        : 0;
+
+    const dormConfig = await this.settingsService.getEffectiveDormConfig();
+    const room = inv.contract.room;
+    const waterOverride = Math.max(0, Number(room?.waterOverrideAmount ?? 0));
+    const electricOverride = Math.max(0, Number(room?.electricOverrideAmount ?? 0));
+
+    const electricUnitPrice = Math.max(0, Number(dormConfig?.electricUnitPrice ?? 0));
+    const electricMinAmount = Math.max(
+      0,
+      Number(dormConfig?.electricMinAmount ?? 0),
+    );
+    const electricMinUnits = Math.max(0, Number(dormConfig?.electricMinUnits ?? 0));
+    const electricMethod =
+      dormConfig?.electricFeeMethod ?? WaterFeeMethod.METER_USAGE;
+    let electricAmount = 0;
+    if (electricMethod === WaterFeeMethod.FLAT_MONTHLY) {
+      electricAmount =
+        electricOverride > 0
+          ? electricOverride
+          : Math.max(0, Number(dormConfig?.electricFlatMonthlyFee ?? 0));
+    } else if (electricMethod === WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
+      const unit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount = Math.max(electricUsage * unit, electricMinAmount);
+    } else if (electricMethod === WaterFeeMethod.METER_USAGE_MIN_UNITS) {
+      const unit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount =
+        electricUsage <= electricMinUnits ? electricMinAmount : electricUsage * unit;
+    } else if (electricMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE) {
+      const unit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount =
+        electricUsage <= electricMinUnits
+          ? electricMinAmount
+          : electricMinAmount + (electricUsage - electricMinUnits) * unit;
+    } else if (electricMethod === WaterFeeMethod.METER_USAGE_TIERED) {
+      electricAmount = this.computeTieredAmount(
+        electricUsage,
+        electricOverride > 0 ? electricOverride : electricUnitPrice,
+        Array.isArray(dormConfig?.electricTieredRates)
+          ? (dormConfig?.electricTieredRates as Array<{
+              uptoUnit?: number | null;
+              unitPrice: number;
+              chargeType?: 'PER_UNIT' | 'FLAT';
+            }>)
+          : [],
+      );
+    } else {
+      const unit = electricOverride > 0 ? electricOverride : electricUnitPrice;
+      electricAmount = electricUsage * unit;
+    }
+
+    const waterUnitPrice = Math.max(0, Number(dormConfig?.waterUnitPrice ?? 0));
+    const waterMinAmount = Math.max(0, Number(dormConfig?.waterMinAmount ?? 0));
+    const waterMinUnits = Math.max(0, Number(dormConfig?.waterMinUnits ?? 0));
+    const waterMethod = dormConfig?.waterFeeMethod ?? WaterFeeMethod.METER_USAGE;
+    let waterAmount = 0;
+    if (waterMethod === WaterFeeMethod.FLAT_MONTHLY) {
+      waterAmount =
+        waterOverride > 0
+          ? waterOverride
+          : Math.max(0, Number(dormConfig?.waterFlatMonthlyFee ?? 0));
+    } else if (waterMethod === WaterFeeMethod.FLAT_PER_PERSON) {
+      const perPerson = Math.max(0, Number(dormConfig?.waterFlatPerPersonFee ?? 0));
+      const occupants = Math.max(1, Number(inv.contract?.occupantCount ?? 1));
+      waterAmount = perPerson * occupants;
+    } else if (waterMethod === WaterFeeMethod.METER_USAGE_MIN_AMOUNT) {
+      const unit = waterOverride > 0 ? waterOverride : waterUnitPrice;
+      waterAmount = Math.max(waterUsage * unit, waterMinAmount);
+    } else if (waterMethod === WaterFeeMethod.METER_USAGE_MIN_UNITS) {
+      const unit = waterOverride > 0 ? waterOverride : waterUnitPrice;
+      waterAmount = waterUsage <= waterMinUnits ? waterMinAmount : waterUsage * unit;
+    } else if (waterMethod === WaterFeeMethod.METER_USAGE_PLUS_BASE) {
+      const unit = waterOverride > 0 ? waterOverride : waterUnitPrice;
+      waterAmount =
+        waterUsage <= waterMinUnits
+          ? waterMinAmount
+          : waterMinAmount + (waterUsage - waterMinUnits) * unit;
+    } else if (waterMethod === WaterFeeMethod.METER_USAGE_TIERED) {
+      waterAmount = this.computeTieredAmount(
+        waterUsage,
+        waterOverride > 0 ? waterOverride : waterUnitPrice,
+        Array.isArray(dormConfig?.waterTieredRates)
+          ? (dormConfig?.waterTieredRates as Array<{
+              uptoUnit?: number | null;
+              unitPrice: number;
+              chargeType?: 'PER_UNIT' | 'FLAT';
+            }>)
+          : [],
+      );
+    } else {
+      const unit = waterOverride > 0 ? waterOverride : waterUnitPrice;
+      waterAmount = waterUsage * unit;
+    }
+
+    waterAmount = this.round(waterAmount);
+    electricAmount = this.round(electricAmount);
+    const itemsTotal = this.round(
+      (inv.items || []).reduce((sum, it) => sum + Number(it.amount || 0), 0),
+    );
+    const totalAmount = Math.max(
+      0,
+      this.round(
+        Number(inv.rentAmount) +
+          waterAmount +
+          electricAmount +
+          Number(inv.otherFees || 0) +
+          itemsTotal -
+          Number(inv.discount || 0),
+      ),
+    );
+
+    const updated = await this.prisma.invoice.update({
+      where: { id: inv.id },
+      data: { waterAmount, electricAmount, totalAmount },
+    });
+    return { id: updated.id, skipped: false };
+  }
+
+  async recalculateRoomMonth(roomId: string, month: number, year: number) {
+    const targets = await this.prisma.invoice.findMany({
+      where: {
+        month,
+        year,
+        status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+        contract: { roomId },
+      },
+      select: { id: true },
+    });
+    let updated = 0;
+    for (const t of targets) {
+      const r = await this.recalculateInvoice(t.id);
+      if (!r.skipped) updated += 1;
+    }
+    return { ok: true, updated, total: targets.length };
+  }
+
+  async recalculateMonth(month: number, year: number) {
+    const targets = await this.prisma.invoice.findMany({
+      where: {
+        month,
+        year,
+        status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+      },
+      select: { id: true },
+    });
+    let updated = 0;
+    for (const t of targets) {
+      const r = await this.recalculateInvoice(t.id);
+      if (!r.skipped) updated += 1;
+    }
+    return { ok: true, updated, total: targets.length, month, year };
   }
 
   async generate(generateInvoiceDto: GenerateInvoiceDto) {
@@ -486,6 +772,60 @@ export class InvoicesService implements OnModuleInit {
     return updated;
   }
 
+  async unsettle(id: string) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: { contract: true },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.status !== InvoiceStatus.PAID) {
+      throw new BadRequestException('Invoice is not in PAID status');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const verifiedPayments = await tx.payment.findMany({
+        where: { invoiceId: id, status: PaymentStatus.VERIFIED },
+      });
+
+      const depositBack = this.round(
+        verifiedPayments
+          .filter((p) => String(p.slipBankRef || '').toUpperCase() === 'DEPOSIT')
+          .reduce((sum, p) => sum + Number(p.amount || 0), 0),
+      );
+
+      if (depositBack > 0) {
+        const currentDeposit = Math.max(0, Number(invoice.contract?.deposit ?? 0));
+        await tx.contract.update({
+          where: { id: invoice.contractId },
+          data: { deposit: this.round(currentDeposit + depositBack) },
+        });
+      }
+
+      await tx.payment.updateMany({
+        where: { invoiceId: id, status: PaymentStatus.VERIFIED },
+        data: { status: PaymentStatus.REJECTED },
+      });
+
+      const updated = await tx.invoice.update({
+        where: { id },
+        data: { status: InvoiceStatus.DRAFT },
+      });
+
+      appendLog({
+        action: 'UPDATE',
+        entityType: 'Invoice',
+        entityId: id,
+        details: {
+          fromStatus: InvoiceStatus.PAID,
+          toStatus: InvoiceStatus.DRAFT,
+          action: 'UNSETTLE',
+          refundedDeposit: depositBack,
+        },
+      });
+      return updated;
+    });
+  }
+
   create(createInvoiceDto: CreateInvoiceDto) {
     const rent = this.round(Number(createInvoiceDto.rentAmount));
     const water = this.round(Number(createInvoiceDto.waterAmount));
@@ -724,6 +1064,7 @@ export class InvoicesService implements OnModuleInit {
             tenant: true,
           },
         },
+        items: true,
       },
     });
   }
@@ -963,30 +1304,50 @@ export class InvoicesService implements OnModuleInit {
     if (!invoice) {
       throw new NotFoundException('Invoice not found');
     }
+
+    if (invoice.status === InvoiceStatus.SENT) {
+      // ไม่ส่งซ้ำ เพื่อกันการพุชบิลซ้ำเมื่อผู้ใช้กดส่งหลายรอบ
+      return invoice;
+    }
+
     const tenant = invoice.contract?.tenant;
     const room = invoice.contract?.room;
-    if (tenant?.lineUserId && room?.number) {
-      const dormConfig = await this.prisma.dormConfig.findFirst();
-      const bankNote = dormConfig?.bankAccount
-        ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
-        : undefined;
-      if (tenant.lineUserId) {
-        await this.lineService.pushRentBillFlex(tenant.lineUserId, {
-          room: room.number,
-          month: invoice.month,
-          year: invoice.year,
-          rentAmount: Number(invoice.rentAmount),
-          waterAmount: Number(invoice.waterAmount),
-          electricAmount: Number(invoice.electricAmount),
-          otherFees: Number(invoice.otherFees || 0),
-          discount: Number(invoice.discount || 0),
-          totalAmount: Number(invoice.totalAmount),
-          buildingLabel:
-            room.building?.name || room.building?.code || undefined,
-          bankInstruction: bankNote,
-        });
-      }
+
+    if (!tenant?.lineUserId || !room?.number) {
+      throw new BadRequestException(
+        'ไม่พบข้อมูล LINE ของผู้เช่าหรือเลขห้องสำหรับบิลนี้',
+      );
     }
+
+    const dormConfig = await this.prisma.dormConfig.findFirst();
+    const bankNote = dormConfig?.bankAccount
+      ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
+      : undefined;
+
+    try {
+      await this.lineService.pushRentBillFlex(tenant.lineUserId, {
+        room: room.number,
+        month: invoice.month,
+        year: invoice.year,
+        rentAmount: Number(invoice.rentAmount),
+        waterAmount: Number(invoice.waterAmount),
+        electricAmount: Number(invoice.electricAmount),
+        otherFees: Number(invoice.otherFees || 0),
+        discount: Number(invoice.discount || 0),
+        totalAmount: Number(invoice.totalAmount),
+        buildingLabel: room.building?.name || room.building?.code || undefined,
+        bankInstruction: bankNote,
+      });
+    } catch (err: any) {
+      if (this.isLineQuotaOrRateLimitError(err)) {
+        const nextRetryAt = this.computeNextRetryAtByQuota();
+        throw new BadRequestException(
+          this.buildLineQuotaRetryMessage(nextRetryAt),
+        );
+      }
+      throw err;
+    }
+
     const updated = await this.prisma.invoice.update({
       where: { id },
       data: { status: InvoiceStatus.SENT },
@@ -999,7 +1360,8 @@ export class InvoicesService implements OnModuleInit {
 
   async sendAll(month: number, year: number) {
     const invoices = await this.prisma.invoice.findMany({
-      where: { month, year },
+      // ส่งเฉพาะใบที่ยังเป็นร่างเท่านั้น (ถ้าส่งแล้วจะไม่ย้อนกลับ/ยิงซ้ำ)
+      where: { month, year, status: InvoiceStatus.DRAFT },
       include: {
         contract: {
           include: { tenant: true, room: { include: { building: true } } },
@@ -1010,10 +1372,24 @@ export class InvoicesService implements OnModuleInit {
     const bankNote = dormConfig?.bankAccount
       ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
       : undefined;
-    for (const inv of invoices) {
+
+    const sentIds: string[] = [];
+    const failed: Array<{ id: string; reason: string }> = [];
+    let nextRetryAt: string | undefined;
+
+    for (let i = 0; i < invoices.length; i++) {
+      const inv = invoices[i];
       const tenant = inv.contract?.tenant;
       const room = inv.contract?.room;
-      if (tenant?.lineUserId && room?.number) {
+      if (!tenant?.lineUserId || !room?.number) {
+        failed.push({
+          id: inv.id,
+          reason: 'missing lineUserId or room.number',
+        });
+        continue;
+      }
+
+      try {
         await this.lineService.pushRentBillFlex(tenant.lineUserId, {
           room: room.number,
           month: inv.month,
@@ -1030,13 +1406,48 @@ export class InvoicesService implements OnModuleInit {
             undefined,
           bankInstruction: bankNote,
         });
+        sentIds.push(inv.id);
+      } catch (err: any) {
+        const quota = this.isLineQuotaOrRateLimitError(err);
+        if (quota) {
+          nextRetryAt = nextRetryAt || this.computeNextRetryAtByQuota();
+          failed.push({ id: inv.id, reason: 'line_quota_or_rate_limited' });
+          // ถ้าเจอโควต้า/Rate-limit แนะนำหยุดยิงต่อเพื่อไม่ให้เสียรอบ
+          // แต่ให้ติ๊กว่า "ใบที่เหลือ" จะยังเป็น DRAFT เพราะยังส่งไม่ได้
+          for (let j = i + 1; j < invoices.length; j++) {
+            failed.push({
+              id: invoices[j].id,
+              reason: 'line_quota_or_rate_limited',
+            });
+          }
+          break; // quota มักจะไม่หายระหว่างรันเดียว
+        }
+        failed.push({
+          id: inv.id,
+          reason: String(err?.message || err || 'unknown_error'),
+        });
+        // ยังพยายามส่งต่อใบถัดไปสำหรับ error ที่ไม่ใช่ quota
       }
     }
-    await this.prisma.invoice.updateMany({
-      where: { month, year },
-      data: { status: InvoiceStatus.SENT },
-    });
-    return { ok: true, count: invoices.length };
+
+    if (sentIds.length > 0) {
+      await this.prisma.invoice.updateMany({
+        where: { id: { in: sentIds } },
+        data: { status: InvoiceStatus.SENT },
+      });
+    }
+
+    return {
+      ok: true,
+      // รองรับ client เก่าที่อาจใช้ field นี้
+      count: invoices.length,
+      total: invoices.length,
+      sent: sentIds.length,
+      failed: failed.length,
+      nextRetryAt,
+      // ส่งเพื่อให้ UI/ผู้ดูแลรู้ว่าเหลือใบไหน
+      failedIds: failed.map((f) => f.id),
+    };
   }
 
   async sendForRoom(month: number, year: number, roomId: string) {
@@ -1057,13 +1468,25 @@ export class InvoicesService implements OnModuleInit {
     if (!invoice) {
       throw new NotFoundException('Invoice not found for this room and period');
     }
+
+    if (invoice.status === InvoiceStatus.SENT) {
+      return { ok: true, id: invoice.id };
+    }
+
     const dormConfig = await this.prisma.dormConfig.findFirst();
     const bankNote = dormConfig?.bankAccount
       ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
       : undefined;
     const tenant = invoice.contract?.tenant;
     const room = invoice.contract?.room;
-    if (tenant?.lineUserId && room?.number) {
+
+    if (!tenant?.lineUserId || !room?.number) {
+      throw new BadRequestException(
+        'ไม่พบข้อมูล LINE ของผู้เช่าหรือเลขห้องสำหรับบิลนี้',
+      );
+    }
+
+    try {
       await this.lineService.pushRentBillFlex(tenant.lineUserId, {
         room: room.number,
         month: invoice.month,
@@ -1080,13 +1503,20 @@ export class InvoicesService implements OnModuleInit {
           undefined,
         bankInstruction: bankNote,
       });
+    } catch (err: any) {
+      if (this.isLineQuotaOrRateLimitError(err)) {
+        const nextRetryAt = this.computeNextRetryAtByQuota();
+        throw new BadRequestException(
+          this.buildLineQuotaRetryMessage(nextRetryAt),
+        );
+      }
+      throw err;
     }
-    if (invoice.status !== InvoiceStatus.SENT) {
-      await this.prisma.invoice.update({
-        where: { id: invoice.id },
-        data: { status: InvoiceStatus.SENT },
-      });
-    }
+
+    await this.prisma.invoice.update({
+      where: { id: invoice.id },
+      data: { status: InvoiceStatus.SENT },
+    });
     return { ok: true, id: invoice.id };
   }
 
@@ -1299,10 +1729,20 @@ export class InvoicesService implements OnModuleInit {
     const bankNote = dormConfig?.bankAccount
       ? `โอนบัญชี ${dormConfig.bankAccount} เท่านั้น`
       : undefined;
-    for (const inv of invoices) {
+
+    const sentIds: string[] = [];
+    const failedIds: string[] = [];
+    let nextRetryAt: string | undefined;
+
+    for (let i = 0; i < invoices.length; i++) {
+      const inv = invoices[i];
       const tenant = inv.contract?.tenant;
       const room = inv.contract?.room;
-      if (tenant?.lineUserId && room?.number) {
+      if (!tenant?.lineUserId || !room?.number) {
+        failedIds.push(inv.id);
+        continue;
+      }
+      try {
         await this.lineService.pushRentBillFlex(tenant.lineUserId, {
           room: room.number,
           month: inv.month,
@@ -1319,19 +1759,37 @@ export class InvoicesService implements OnModuleInit {
             undefined,
           bankInstruction: bankNote,
         });
+        sentIds.push(inv.id);
+      } catch (err: any) {
+        const quota = this.isLineQuotaOrRateLimitError(err);
+        if (quota) {
+          nextRetryAt = nextRetryAt || this.computeNextRetryAtByQuota();
+          failedIds.push(inv.id);
+          for (let j = i + 1; j < invoices.length; j++) {
+            failedIds.push(invoices[j].id);
+          }
+          break;
+        }
+        failedIds.push(inv.id);
       }
     }
-    await this.prisma.invoice.updateMany({
-      where: { month, year, status: InvoiceStatus.DRAFT },
-      data: { status: InvoiceStatus.SENT },
-    });
+
+    if (sentIds.length > 0) {
+      await this.prisma.invoice.updateMany({
+        where: { id: { in: sentIds } },
+        data: { status: InvoiceStatus.SENT },
+      });
+    }
     appendLog({
       action: 'AUTO_SEND_DONE',
       entityType: 'Invoice',
       details: {
         month,
         year,
-        count: invoices.length,
+        total: invoices.length,
+        sent: sentIds.length,
+        failed: failedIds.length,
+        nextRetryAt,
         invoiceIds: invoices.map((inv) => inv.id),
       },
     });
@@ -1341,7 +1799,17 @@ export class InvoicesService implements OnModuleInit {
     try {
       fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
     } catch {}
-    return { ok: true, count: invoices.length, month, year };
+    return {
+      ok: true,
+      // รองรับ client เก่าที่อาจใช้ field นี้
+      count: invoices.length,
+      total: invoices.length,
+      sent: sentIds.length,
+      failed: failedIds.length,
+      nextRetryAt,
+      month,
+      year,
+    };
   }
 
   async markOverdue() {

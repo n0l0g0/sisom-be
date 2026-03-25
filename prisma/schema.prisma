@@ -225,6 +225,8 @@ model Invoice {
   electricAmount  Decimal   @db.Decimal(10, 2)
   otherFees       Decimal   @default(0) @db.Decimal(10, 2)
   discount        Decimal   @default(0) @db.Decimal(10, 2)
+  discountNote    String?
+  note            String?
   totalAmount     Decimal   @db.Decimal(10, 2)
   
   status          InvoiceStatus @default(DRAFT)

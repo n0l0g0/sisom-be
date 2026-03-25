@@ -3,6 +3,7 @@ import { CreateMeterReadingDto } from './dto/create-meter-reading.dto';
 import { UpdateMeterReadingDto } from './dto/update-meter-reading.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { InvoicesService } from '../invoices/invoices.service';
 import {
   appendLog,
   readDeletedStore,
@@ -11,7 +12,10 @@ import {
 
 @Injectable()
 export class MeterReadingsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private invoicesService: InvoicesService,
+  ) {}
 
   create(createMeterReadingDto: CreateMeterReadingDto) {
     return this.prisma.meterReading
@@ -36,6 +40,10 @@ export class MeterReadingsService {
           entityId: mr.id,
           details: { roomId: mr.roomId, month: mr.month, year: mr.year },
         });
+        // Auto-refresh invoice utility values for this room/month after meter change.
+        this.invoicesService
+          .recalculateRoomMonth(mr.roomId, mr.month, mr.year)
+          .catch(() => {});
         return mr;
       });
   }
@@ -121,6 +129,9 @@ export class MeterReadingsService {
           entityId: id,
           details: updateMeterReadingDto,
         });
+        this.invoicesService
+          .recalculateRoomMonth(mr.roomId, mr.month, mr.year)
+          .catch(() => {});
         return mr;
       });
   }
