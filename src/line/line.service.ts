@@ -5962,8 +5962,15 @@ export class LineService implements OnModuleInit {
       !verify.ok &&
       !verify.duplicate &&
       /quota|โควต้า|basic|package|limit|หมด/i.test(verify.message || '');
+    const isSlipOkNoResponse =
+      !verify.ok &&
+      !verify.duplicate &&
+      /timeout|timed out|network|fetch|econn|enotfound|eai_again|gateway|service unavailable|temporar|ไม่ตอบกลับ|เชื่อมต่อไม่ได้|หมดเวลา/i.test(
+        (verify.message || '').toLowerCase(),
+      );
 
-    if (isQuotaError) {
+    // ตรวจสอบมือเฉพาะเมื่อ SlipOK ไม่มีตอบกลับ/เชื่อมต่อไม่ได้ หรือโควต้าหมด
+    if (isQuotaError || isSlipOkNoResponse) {
       const paymentAmount = Number(invoice.totalAmount);
       await this.prisma.payment.create({
         data: {
@@ -6042,7 +6049,7 @@ export class LineService implements OnModuleInit {
           origin:
             [verify.sourceBank, verify.sourceAccount].filter(Boolean).join(' / ') ||
             '—',
-        dest:
+          dest:
             [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
             '—',
           when,
