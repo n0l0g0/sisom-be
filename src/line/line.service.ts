@@ -6157,6 +6157,15 @@ export class LineService implements OnModuleInit {
             slipUrl,
             type,
           });
+          // Clear payment context immediately so user can start new flow (e.g. แจ้งซ่อม)
+          if (userId) {
+            const prevTimer = this.paymentContextTimers.get(userId);
+            if (prevTimer) {
+              clearTimeout(prevTimer);
+              this.paymentContextTimers.delete(userId);
+            }
+            this.paymentContext.delete(userId);
+          }
           // End staff payment flow immediately on successful cutoff
           if (isStaff && userId) {
             try {
@@ -6170,6 +6179,15 @@ export class LineService implements OnModuleInit {
           );
           try {
             await this.replyText(event.replyToken, 'ตัดยอดเรียบร้อยแล้วครับ');
+            // Clear payment context on fallback text reply too
+            if (userId) {
+              const prevTimer = this.paymentContextTimers.get(userId);
+              if (prevTimer) {
+                clearTimeout(prevTimer);
+                this.paymentContextTimers.delete(userId);
+              }
+              this.paymentContext.delete(userId);
+            }
             if (isStaff && userId) {
               this.clearStaffPaymentTimer(userId || '');
               this.staffPaymentState.delete(userId || '');
