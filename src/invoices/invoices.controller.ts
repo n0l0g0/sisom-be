@@ -49,15 +49,28 @@ export class InvoicesController {
     );
   }
 
+  /** Returns distinct (year, month) pairs with invoice counts — lightweight, no joins. */
+  @Get('months')
+  getMonths() {
+    return this.invoicesService.getAvailableMonths();
+  }
+
   @Get()
-  findAll(@Query('roomId') roomId?: string, @Query('ids') ids?: string) {
+  findAll(
+    @Query('roomId') roomId?: string,
+    @Query('ids') ids?: string,
+    @Query('month') month?: string,
+    @Query('year') year?: string,
+  ) {
     if (ids) {
       return this.invoicesService.findByIds(ids.split(','));
     }
     if (roomId) {
       return this.invoicesService.findByRoom(roomId);
     }
-    return this.invoicesService.findAll();
+    const m = month ? Number(month) : undefined;
+    const y = year ? Number(year) : undefined;
+    return this.invoicesService.findAll(m, y);
   }
 
   @Post('fetch-by-ids')
@@ -96,6 +109,19 @@ export class InvoicesController {
     const method = body?.method === 'DEPOSIT' ? 'DEPOSIT' : 'CASH';
     const paidAt = typeof body?.paidAt === 'string' ? body.paidAt : undefined;
     return this.invoicesService.settle(id, method, paidAt);
+  }
+
+  @Post(':id/settle-partial')
+  settlePartialOne(
+    @Param('id') id: string,
+    @Body() body: { amount: number; paidAt?: string },
+  ) {
+    const amount = Number(body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('amount must be a positive number');
+    }
+    const paidAt = typeof body?.paidAt === 'string' ? body.paidAt : undefined;
+    return this.invoicesService.settlePartial(id, amount, paidAt);
   }
 
   @Post(':id/unsettle')
