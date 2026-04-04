@@ -1583,17 +1583,41 @@ export class LineService implements OnModuleInit {
     });
     if (!tenant) return;
 
+    const activeContracts = await this.prisma.contract.findMany({
+      where: { tenantId, isActive: true },
+      select: { roomId: true },
+    });
+    const roomIds = [...new Set(activeContracts.map((c) => c.roomId))];
+
+    const lineIdsToGeneral = new Set<string>();
+    const tid = tenant.lineUserId?.trim();
+    if (tid) lineIdsToGeneral.add(tid);
+
+    if (roomIds.length > 0) {
+      const contacts = await this.prisma.roomContact.findMany({
+        where: {
+          roomId: { in: roomIds },
+          lineUserId: { not: null },
+        },
+        select: { lineUserId: true },
+      });
+      for (const c of contacts) {
+        const uid = c.lineUserId?.trim();
+        if (uid) lineIdsToGeneral.add(uid);
+      }
+    }
+
+    for (const uid of lineIdsToGeneral) {
+      if (this.isStaffUser(uid)) continue;
+      await this.linkMenuForUser(uid, 'GENERAL');
+    }
+
     const lineUserId = tenant.lineUserId;
     if (lineUserId) {
-      // Unlink Rich Menu and set to GENERAL
-      await this.linkMenuForUser(lineUserId, 'GENERAL');
-      
-      // Clear from RoomContacts by LineUserId
       await this.removeRoomContactByLineUserId(lineUserId);
     }
 
     if (tenant.phone) {
-      // Clear from RoomContacts by Phone
       await this.removeRoomContactByPhone(tenant.phone);
     }
   }
