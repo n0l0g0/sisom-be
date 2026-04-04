@@ -759,17 +759,113 @@ export class InvoicesService implements OnModuleInit {
         const contract = await this.prisma.contract.findUnique({
           where: { id: invoice.contractId },
         });
-        const depositLeft = Math.max(0, Number(contract?.deposit ?? 0));
         const days = this.lineService.getMoveOutDaysByUserId(tenant.lineUserId);
         await this.lineService.pushMessage(
           tenant.lineUserId,
-          `ยอดเงินประกันที่จะคืนให้คุณคือ ฿${depositLeft.toLocaleString()} บาท\nเงินประกันจะได้รับคืนผ่านธนาคารภายใน ${days} วัน\nกรุณาส่งข้อมูลบัญชี: ชื่อ-นามสกุล, เบอร์โทรศัพท์, เลขบัญชี, ธนาคาร`,
+          `เงินประกันจะได้รับคืนผ่านธนาคารภายใน ${days} วัน\nกรุณาส่งข้อมูลบัญชี: ชื่อ-นามสกุล, เบอร์โทรศัพท์, เลขบัญชี, ธนาคาร`,
         );
       }
     } catch (e) {
       void e;
     }
     return updated;
+  }
+
+  async settlePartial(id: string, partialAmount: number, paidAt?: string) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        contract: {
+          include: {
+            tenant: true,
+            room: { include: { building: true } },
+          },
+        },
+        payments: { where: { status: PaymentStatus.VERIFIED } },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.status === InvoiceStatus.PAID || invoice.status === InvoiceStatus.CANCELLED) {
+      throw new BadRequestException(`Invoice status is ${invoice.status}, cannot accept partial payment`);
+    }
+
+    const totalAmount = this.round(Number(invoice.totalAmount));
+    const alreadyPaid = this.round(
+      invoice.payments.reduce((s, p) => s + Number(p.amount), 0),
+    );
+    const remaining = this.round(Math.max(0, totalAmount - alreadyPaid));
+
+    if (partialAmount <= 0) throw new BadRequestException('ยอดชำระต้องมากกว่า 0');
+    if (partialAmount > remaining) {
+      throw new BadRequestException(`ยอดชำระ (${partialAmount}) มากกว่ายอดคงค้าง (${remaining})`);
+    }
+
+    const paidAtDate = paidAt ? new Date(paidAt) : new Date();
+
+    await this.prisma.payment.create({
+      data: {
+        invoiceId: id,
+        amount: partialAmount,
+        slipBankRef: 'PARTIAL_CASH',
+        status: PaymentStatus.VERIFIED,
+        paidAt: paidAtDate,
+      },
+    });
+
+    const newRemaining = this.round(remaining - partialAmount);
+
+    // If fully paid now, mark PAID — otherwise keep current status
+    let updatedStatus: InvoiceStatus | undefined;
+    if (newRemaining <= 0) {
+      updatedStatus = InvoiceStatus.PAID;
+    }
+
+    const updated = await this.prisma.invoice.update({
+      where: { id },
+      data: updatedStatus ? { status: updatedStatus } : {},
+    });
+
+    // Notify staff
+    try {
+      const room = invoice.contract?.room;
+      const monthLabel = new Date(invoice.year, invoice.month - 1).toLocaleDateString('th-TH', {
+        month: 'long',
+        year: 'numeric',
+      });
+      const buildingName = room?.building?.name || room?.building?.code || '';
+      const buildingPart = buildingName ? `${buildingName} / ` : '';
+      const amtStr = partialAmount.toLocaleString('th-TH', { minimumFractionDigits: 0 });
+      const remStr = newRemaining.toLocaleString('th-TH', { minimumFractionDigits: 0 });
+      const whenStr = paidAtDate.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+
+      let msg: string;
+      if (newRemaining <= 0) {
+        msg = `${buildingPart}${room?.number} ชำระค่าห้องเดือน ${monthLabel} ยอด ${amtStr} บาท (ครบถ้วน) แล้วครับ`;
+      } else {
+        msg = `${buildingPart}${room?.number} แบ่งชำระค่าห้องเดือน ${monthLabel}\nรับชำระ: ${amtStr} บาท\nคงเหลือ: ${remStr} บาท\nวันที่: ${whenStr}`;
+      }
+
+      await this.lineService.notifyStaffPaymentVerified({
+        room: room?.number || '',
+        buildingLabel: buildingName,
+        amount: partialAmount,
+        month: monthLabel,
+        type: 'NORMAL',
+      });
+      // Override the generic message with the partial-specific one that includes remaining balance
+      const targets = await this.prisma.user.findMany({
+        where: { role: { in: ['OWNER', 'ADMIN', 'STAFF'] }, lineUserId: { not: null } },
+      });
+      for (const s of targets) {
+        if (s.lineUserId) {
+          try { await this.lineService.pushMessage(s.lineUserId, msg); } catch { /* ignore */ }
+        }
+      }
+    } catch {
+      /* ignore notification errors */
+    }
+
+    return { ...updated, paidAmount: this.round(alreadyPaid + partialAmount), remaining: newRemaining };
   }
 
   async unsettle(id: string) {
@@ -864,8 +960,23 @@ export class InvoicesService implements OnModuleInit {
       });
   }
 
-  async findAll() {
+  /** Returns distinct (year, month) pairs with invoice counts — no joins, very fast. */
+  async getAvailableMonths(): Promise<{ year: number; month: number; count: number }[]> {
+    const rows = await this.prisma.invoice.groupBy({
+      by: ['year', 'month'],
+      _count: { id: true },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+    return rows.map((r) => ({ year: r.year, month: r.month, count: r._count.id }));
+  }
+
+  async findAll(month?: number, year?: number) {
+    const where: Record<string, unknown> = {};
+    if (year && Number.isFinite(year)) where.year = year;
+    if (month && Number.isFinite(month)) where.month = month;
+
     const invoices = await this.prisma.invoice.findMany({
+      where,
       include: {
         contract: {
           select: {
@@ -898,21 +1009,14 @@ export class InvoicesService implements OnModuleInit {
     });
 
     return invoices.sort((a, b) => {
-      // Sort by Building Name
       const buildingA = a.contract?.room?.building?.name || '';
       const buildingB = b.contract?.room?.building?.name || '';
-      if (buildingA !== buildingB) {
-        return buildingA.localeCompare(buildingB);
-      }
+      if (buildingA !== buildingB) return buildingA.localeCompare(buildingB);
 
-      // Sort by Floor
       const floorA = a.contract?.room?.floor || 0;
       const floorB = b.contract?.room?.floor || 0;
-      if (floorA !== floorB) {
-        return floorA - floorB;
-      }
+      if (floorA !== floorB) return floorA - floorB;
 
-      // Sort by Room Number (Numeric aware)
       const roomA = a.contract?.room?.number || '';
       const roomB = b.contract?.room?.number || '';
       return roomA.localeCompare(roomB, undefined, { numeric: true });
