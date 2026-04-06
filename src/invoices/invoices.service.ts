@@ -1066,10 +1066,16 @@ export class InvoicesService implements OnModuleInit {
   /** รายงานสรุปห้องค้างชำระ (สำหรับพิมพ์) - หมายเหตุใส่วันที่นัดชำระเฉพาะเมื่อห้องมีกำหนด */
   async getOutstandingReport(month: number, year: number) {
     const invoices = await this.prisma.invoice.findMany({
-      where: { month, year },
+      where: {
+        month,
+        year,
+        status: { notIn: [InvoiceStatus.PAID, InvoiceStatus.CANCELLED] },
+        contract: { isActive: true },
+      },
       include: {
         contract: {
           select: {
+            isActive: true,
             roomId: true,
             room: {
               select: {
@@ -1098,6 +1104,7 @@ export class InvoicesService implements OnModuleInit {
     }[] = [];
 
     for (const inv of invoices) {
+      if (!inv.contract?.isActive) continue;
       const totalAmount = Number(inv.totalAmount);
       const paidSum = inv.payments.reduce((s, p) => s + Number(p.amount), 0);
       const totalDue = Math.max(0, this.round(totalAmount - paidSum));
