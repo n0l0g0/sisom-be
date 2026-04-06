@@ -149,6 +149,86 @@ export class ContractsService {
     const existing = await this.prisma.contract.findUnique({
       where: { id },
     });
+    if (!existing) {
+      throw new BadRequestException('contract not found');
+    }
+
+    // Keep invoice history by preserving old contract when room changes.
+    // Instead of mutating roomId in-place (which rebinds old invoices to new room),
+    // close current contract and create a new contract for the target room.
+    if (updateContractDto.roomId && updateContractDto.roomId !== existing.roomId) {
+      const targetRoomId = updateContractDto.roomId;
+      const occupied = await this.prisma.contract.findFirst({
+        where: { roomId: targetRoomId, isActive: true },
+        select: { id: true },
+      });
+      if (occupied) {
+        throw new BadRequestException('ห้องปลายทางมีผู้เช่าอยู่แล้ว');
+      }
+
+      const now = new Date();
+      const nextStartDate = startDate ? new Date(startDate) : now;
+      const nextIsActive = updateContractDto.isActive ?? true;
+
+      const moved = await this.prisma.$transaction(async (tx) => {
+        await tx.contract.update({
+          where: { id },
+          data: {
+            isActive: false,
+            endDate: endDate ? new Date(endDate) : now,
+          },
+        });
+
+        const next = await tx.contract.create({
+          data: {
+            tenantId: existing.tenantId,
+            roomId: targetRoomId,
+            startDate: nextStartDate,
+            endDate: nextIsActive ? null : endDate ? new Date(endDate) : now,
+            deposit:
+              updateContractDto.deposit !== undefined
+                ? Number(updateContractDto.deposit)
+                : Number(existing.deposit),
+            currentRent:
+              updateContractDto.currentRent !== undefined
+                ? Number(updateContractDto.currentRent)
+                : Number(existing.currentRent),
+            occupantCount:
+              updateContractDto.occupantCount !== undefined
+                ? Number(updateContractDto.occupantCount)
+                : Number(existing.occupantCount),
+            isActive: nextIsActive,
+            contractImageUrl:
+              updateContractDto.contractImageUrl !== undefined
+                ? updateContractDto.contractImageUrl
+                : existing.contractImageUrl,
+          },
+        });
+
+        await tx.room.update({
+          where: { id: existing.roomId },
+          data: { status: RoomStatus.VACANT },
+        });
+        await tx.room.update({
+          where: { id: targetRoomId },
+          data: { status: nextIsActive ? RoomStatus.OCCUPIED : RoomStatus.VACANT },
+        });
+        return next;
+      });
+
+      appendLog({
+        action: 'UPDATE',
+        entityType: 'Contract',
+        entityId: id,
+        details: {
+          type: 'MOVE_ROOM',
+          fromRoomId: existing.roomId,
+          toRoomId: targetRoomId,
+          newContractId: moved.id,
+        },
+      });
+      return moved;
+    }
 
     const contract = await this.prisma.contract.update({
       where: { id },
