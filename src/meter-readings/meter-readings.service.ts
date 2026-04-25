@@ -17,7 +17,15 @@ export class MeterReadingsService {
     private invoicesService: InvoicesService,
   ) {}
 
-  create(createMeterReadingDto: CreateMeterReadingDto) {
+  async create(createMeterReadingDto: CreateMeterReadingDto) {
+    await this.ensurePreviousMonthReading(
+      createMeterReadingDto.roomId,
+      createMeterReadingDto.month,
+      createMeterReadingDto.year,
+      Number(createMeterReadingDto.waterReading),
+      Number(createMeterReadingDto.electricReading),
+    );
+
     return this.prisma.meterReading
       .upsert({
         where: {
@@ -46,6 +54,60 @@ export class MeterReadingsService {
           .catch(() => {});
         return mr;
       });
+  }
+
+  private async ensurePreviousMonthReading(
+    roomId: string,
+    month: number,
+    year: number,
+    currentWater: number,
+    currentElectric: number,
+  ) {
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear = month === 1 ? year - 1 : year;
+
+    const prevExists = await this.prisma.meterReading.findUnique({
+      where: { roomId_month_year: { roomId, month: prevMonth, year: prevYear } },
+    });
+    if (prevExists) return;
+
+    // หาค่ามิเตอร์ล่าสุดที่มีอยู่ก่อนเดือนที่กำลังบันทึก
+    const latest = await this.prisma.meterReading.findFirst({
+      where: {
+        roomId,
+        OR: [
+          { year: { lt: year } },
+          { year, month: { lt: month } },
+        ],
+      },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+
+    // ถ้าไม่มีค่าก่อนหน้าเลย ใช้ค่าปัจจุบันแทน (ใช้ไป = 0)
+    const fillWater = latest ? Number(latest.waterReading) : currentWater;
+    const fillElectric = latest ? Number(latest.electricReading) : currentElectric;
+
+    await this.prisma.meterReading.create({
+      data: {
+        roomId,
+        month: prevMonth,
+        year: prevYear,
+        waterReading: fillWater,
+        electricReading: fillElectric,
+      },
+    });
+
+    appendLog({
+      action: 'UPSERT',
+      entityType: 'MeterReading',
+      details: {
+        roomId,
+        month: prevMonth,
+        year: prevYear,
+        autoFilled: true,
+        source: latest ? `copied from ${latest.month}/${latest.year}` : 'same as current (no prior reading)',
+      },
+    });
   }
 
   findAll(month?: number, year?: number) {
