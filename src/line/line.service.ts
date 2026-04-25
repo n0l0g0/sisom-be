@@ -6042,87 +6042,98 @@ export class LineService implements OnModuleInit {
       return slipUrl;
     }
 
-    // De-duplication: avoid creating duplicated payments
+    // De-duplication + payment create in one serializable transaction to prevent
+    // duplicate payments from concurrent slip submissions.
+    let isDupFlex: any = null;
+    let paymentAmount = verify.amount ?? Number(invoice.totalAmount);
     try {
-      let isDup = false;
-      if (verify.bankRef && String(verify.bankRef).trim().length > 0) {
-        const byRef = await this.prisma.payment.findFirst({
-          where: {
-            invoiceId: invoice.id,
-            slipBankRef: { contains: String(verify.bankRef) },
-          },
-        });
-        if (byRef) isDup = true;
-      }
-      if (!isDup) {
-        const recent = await this.prisma.payment.findMany({
-          where: { invoiceId: invoice.id },
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-        });
-        const paidAtTarget = verify.transactedAt
-          ? new Date(verify.transactedAt).getTime()
-          : undefined;
-        const now = Date.now();
-        for (const p of recent) {
-          const sameAmount =
-            Math.abs(Number(p.amount) - Number(verify.amount ?? invoice.totalAmount)) <= 1;
-          const createdClose = Math.abs(new Date(p.createdAt).getTime() - now) <= 120000;
-          const paidAtClose =
-            paidAtTarget !== undefined &&
-            p.paidAt !== null &&
-            Math.abs(new Date(p.paidAt).getTime() - paidAtTarget) <= 120000;
-          if (sameAmount && (paidAtClose || createdClose)) {
-            isDup = true;
-            break;
+      await this.prisma.$transaction(
+        async (tx) => {
+          let isDup = false;
+          if (verify.bankRef && String(verify.bankRef).trim().length > 0) {
+            const byRef = await tx.payment.findFirst({
+              where: {
+                invoiceId: invoice.id,
+                slipBankRef: { contains: String(verify.bankRef) },
+              },
+            });
+            if (byRef) isDup = true;
           }
-        }
-      }
-      if (isDup) {
-        const when = verify.transactedAt
-          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
-              timeZone: 'Asia/Bangkok',
-            })
-          : '—';
-        const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
-        const roomNum =
-          invoice.contract?.room?.number || contract?.room?.number || '-';
-        const flex = this.buildSlipFlex('DUPLICATE', {
-          room: roomNum,
-          origin:
-            [verify.sourceBank, verify.sourceAccount].filter(Boolean).join(' / ') ||
-            '—',
-          dest:
-            [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
-            '—',
-          when,
-          period,
-        });
-        await this.replyFlex(event.replyToken, flex);
-        return slipUrl;
-      }
+          if (!isDup) {
+            const recent = await tx.payment.findMany({
+              where: { invoiceId: invoice.id },
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+            });
+            const paidAtTarget = verify.transactedAt
+              ? new Date(verify.transactedAt).getTime()
+              : undefined;
+            const now = Date.now();
+            for (const p of recent) {
+              const sameAmount =
+                Math.abs(Number(p.amount) - Number(verify.amount ?? invoice.totalAmount)) <= 1;
+              const createdClose = Math.abs(new Date(p.createdAt).getTime() - now) <= 120000;
+              const paidAtClose =
+                paidAtTarget !== undefined &&
+                p.paidAt !== null &&
+                Math.abs(new Date(p.paidAt).getTime() - paidAtTarget) <= 120000;
+              if (sameAmount && (paidAtClose || createdClose)) {
+                isDup = true;
+                break;
+              }
+            }
+          }
+          if (isDup) {
+            const when = verify.transactedAt
+              ? new Date(verify.transactedAt).toLocaleString('th-TH', {
+                  timeZone: 'Asia/Bangkok',
+                })
+              : '—';
+            const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
+            const roomNum =
+              invoice.contract?.room?.number || contract?.room?.number || '-';
+            isDupFlex = this.buildSlipFlex('DUPLICATE', {
+              room: roomNum,
+              origin:
+                [verify.sourceBank, verify.sourceAccount].filter(Boolean).join(' / ') ||
+                '—',
+              dest:
+                [verify.destBank, verify.destAccount].filter(Boolean).join(' / ') ||
+                '—',
+              when,
+              period,
+            });
+            return; // exit transaction without creating payment
+          }
+          paymentAmount = verify.amount ?? Number(invoice.totalAmount);
+          await tx.payment.create({
+            data: {
+              invoiceId: invoice.id,
+              amount: paymentAmount,
+              slipImageUrl: slipUrl,
+              slipBankRef: JSON.stringify(slipMeta),
+              status: verify.ok ? PaymentStatus.VERIFIED : PaymentStatus.PENDING,
+              paidAt: verify.ok
+                ? verify.transactedAt
+                  ? new Date(verify.transactedAt)
+                  : new Date()
+                : undefined,
+              verifiedBy: verify.ok ? 'AUTO' : undefined,
+            },
+          });
+        },
+        { isolationLevel: 'Serializable' },
+      );
     } catch (e) {
       this.logger.warn(
-        `dedup check failed: ${e instanceof Error ? e.message : String(e)}`,
+        `dedup/payment create failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
 
-    const paymentAmount = verify.amount ?? Number(invoice.totalAmount);
-    await this.prisma.payment.create({
-      data: {
-        invoiceId: invoice.id,
-        amount: paymentAmount,
-        slipImageUrl: slipUrl,
-        slipBankRef: JSON.stringify(slipMeta),
-        status: verify.ok ? PaymentStatus.VERIFIED : PaymentStatus.PENDING,
-        paidAt: verify.ok
-          ? verify.transactedAt
-            ? new Date(verify.transactedAt)
-            : new Date()
-          : undefined,
-        verifiedBy: verify.ok ? 'AUTO' : undefined,
-      },
-    });
+    if (isDupFlex) {
+      await this.replyFlex(event.replyToken, isDupFlex);
+      return slipUrl;
+    }
 
     // Calculate total paid including this new payment
     const previousPaid = (invoice.payments || []).reduce(

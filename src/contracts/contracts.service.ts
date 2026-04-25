@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { LineService } from '../line/line.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
 import { RoomStatus, Prisma } from '@prisma/client';
@@ -11,7 +12,10 @@ import {
 
 @Injectable()
 export class ContractsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private lineService: LineService,
+  ) {}
 
   async create(createContractDto: CreateContractDto) {
     const contract = await this.prisma.contract.create({
@@ -390,11 +394,15 @@ export class ContractsService {
       endDate: endDate.toISOString(),
     } as any);
 
-    // Ensure room is vacant and contacts are cleared (update method handles contact clearing)
     await this.prisma.room.update({
       where: { id: contract.roomId },
       data: { status: RoomStatus.VACANT },
     });
+
+    // Reset LINE rich menu and clear room contacts for this tenant
+    try {
+      await this.lineService.disconnectTenant(contract.tenantId);
+    } catch {}
 
     return updated;
   }
