@@ -3870,7 +3870,7 @@ export class LineService implements OnModuleInit {
       }
       const contract = await this.prisma.contract.findFirst({
         where: { tenantId: tenant.id, isActive: true },
-        include: { room: true },
+        include: { room: { include: { building: true } } },
       });
       if (!contract) {
         return this.replyText(event.replyToken, 'ไม่พบสัญญาที่ใช้งานอยู่');
@@ -3891,7 +3891,10 @@ export class LineService implements OnModuleInit {
         return this.replyText(event.replyToken, 'ไม่พบยอดค้างชำระ');
       }
 
-      const carousel = this.buildUnpaidCarousel(invoices);
+      const roomLabel = contract.room
+        ? [contract.room.building?.name, `ห้อง ${contract.room.number}`].filter(Boolean).join(' ')
+        : undefined;
+      const carousel = this.buildUnpaidCarousel(invoices.map((inv) => ({ ...inv, roomLabel })));
       return this.replyFlex(event.replyToken, carousel);
     }
 
@@ -4139,10 +4142,13 @@ export class LineService implements OnModuleInit {
           'ยังไม่พบข้อมูลผู้เช่า กรุณาลงทะเบียนก่อน',
         );
       }
-      const allInvoices: InvoiceBase[] = [];
+      const allInvoices: (InvoiceBase & { roomLabel?: string })[] = [];
       for (const c of contracts) {
+        const roomLabel = c.room
+          ? [(c.room as any).building?.name, `ห้อง ${c.room.number}`].filter(Boolean).join(' ')
+          : undefined;
         for (const inv of c.invoices || []) {
-          allInvoices.push(inv);
+          allInvoices.push({ ...inv, roomLabel });
         }
       }
       if (allInvoices.length === 0) {
@@ -4964,7 +4970,7 @@ export class LineService implements OnModuleInit {
     return null;
   }
 
-  private buildUnpaidCarousel(invoices: InvoiceBase[]) {
+  private buildUnpaidCarousel(invoices: (InvoiceBase & { roomLabel?: string })[]) {
     const bubbles = invoices.map((inv) => {
       const monthLabel = `${this.thaiMonth(inv.month)} ${inv.year}`;
       const total = Number(inv.totalAmount).toLocaleString('en-US', {
@@ -4973,6 +4979,25 @@ export class LineService implements OnModuleInit {
       });
       const [intPart, decPart] = total.split('.');
 
+      const headerContents: any[] = [
+        {
+          type: 'text',
+          text: `บิลเดือน ${monthLabel}`,
+          weight: 'bold',
+          size: 'xl',
+          wrap: true,
+        },
+      ];
+      if (inv.roomLabel) {
+        headerContents.push({
+          type: 'text',
+          text: inv.roomLabel,
+          size: 'sm',
+          color: '#888888',
+          wrap: true,
+        });
+      }
+
       return {
         type: 'bubble',
         body: {
@@ -4980,13 +5005,7 @@ export class LineService implements OnModuleInit {
           layout: 'vertical',
           spacing: 'sm',
           contents: [
-            {
-              type: 'text',
-              text: `บิลเดือน ${monthLabel}`,
-              weight: 'bold',
-              size: 'xl',
-              wrap: true,
-            },
+            ...headerContents,
             {
               type: 'box',
               layout: 'vertical',
