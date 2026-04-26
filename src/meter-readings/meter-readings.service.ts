@@ -110,6 +110,26 @@ export class MeterReadingsService {
     });
   }
 
+  async findLatestPerRoom(beforeMonth: number, beforeYear: number) {
+    const readings = await this.prisma.meterReading.findMany({
+      where: {
+        OR: [
+          { year: { lt: beforeYear } },
+          { year: beforeYear, month: { lt: beforeMonth } },
+        ],
+      },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+
+    const latestPerRoom = new Map<string, (typeof readings)[0]>();
+    for (const r of readings) {
+      if (!latestPerRoom.has(r.roomId)) {
+        latestPerRoom.set(r.roomId, r);
+      }
+    }
+    return Array.from(latestPerRoom.values());
+  }
+
   findAll(month?: number, year?: number) {
     const where: Prisma.MeterReadingWhereInput = {};
     if (month) where.month = month;

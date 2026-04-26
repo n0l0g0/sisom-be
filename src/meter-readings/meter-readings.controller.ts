@@ -40,6 +40,17 @@ export class MeterReadingsController {
     );
   }
 
+  @Get('latest-per-room')
+  findLatestPerRoom(
+    @Query('beforeMonth') beforeMonth: string,
+    @Query('beforeYear') beforeYear: string,
+  ) {
+    return this.meterReadingsService.findLatestPerRoom(
+      parseInt(beforeMonth),
+      parseInt(beforeYear),
+    );
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.meterReadingsService.findOne(id);
