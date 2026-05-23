@@ -37,6 +37,7 @@
     "class-validator": "0.14.3",
     "dotenv": "17.2.4",
     "exceljs": "4.4.0",
+    "googleapis": "^172.0.0",
     "jimp": "0.22.12",
     "node-cron": "3.0.3",
     "passport": "0.7.0",

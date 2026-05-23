@@ -3,10 +3,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as cron from 'node-cron';
 import { exec } from 'child_process';
+import { google } from 'googleapis';
 
 type ScheduleConfig = {
   hour: number;
   minute?: number;
+};
+
+type GoogleDriveConfig = {
+  folderId: string;
+  autoUpload: boolean;
+  credentials?: object;
 };
 
 @Injectable()
@@ -31,6 +38,98 @@ export class BackupsService implements OnModuleInit {
   private configPath() {
     const dir = this.backupsDir();
     return path.join(dir, 'config.json');
+  }
+
+  private driveConfigPath() {
+    return path.join(this.backupsDir(), 'gdrive.json');
+  }
+
+  getGoogleDriveConfig(): { folderId: string; autoUpload: boolean; connected: boolean } {
+    try {
+      const raw = fs.readFileSync(this.driveConfigPath(), 'utf8');
+      const cfg = JSON.parse(raw) as GoogleDriveConfig;
+      return {
+        folderId: cfg.folderId || '',
+        autoUpload: cfg.autoUpload ?? false,
+        connected: !!(cfg.credentials && cfg.folderId),
+      };
+    } catch {
+      return { folderId: '', autoUpload: false, connected: false };
+    }
+  }
+
+  setGoogleDriveConfig(data: {
+    folderId: string;
+    autoUpload: boolean;
+    credentials?: object | null;
+  }) {
+    let existing: GoogleDriveConfig = { folderId: '', autoUpload: false };
+    try {
+      existing = JSON.parse(fs.readFileSync(this.driveConfigPath(), 'utf8'));
+    } catch {}
+    const next: GoogleDriveConfig = {
+      folderId: data.folderId ?? existing.folderId,
+      autoUpload: data.autoUpload ?? existing.autoUpload,
+      credentials:
+        data.credentials !== undefined ? data.credentials ?? undefined : existing.credentials,
+    };
+    fs.writeFileSync(this.driveConfigPath(), JSON.stringify(next, null, 2), 'utf8');
+    return this.getGoogleDriveConfig();
+  }
+
+  removeGoogleDriveConfig() {
+    try {
+      fs.unlinkSync(this.driveConfigPath());
+    } catch {}
+    return { ok: true };
+  }
+
+  private async getDriveClient() {
+    const raw = fs.readFileSync(this.driveConfigPath(), 'utf8');
+    const cfg = JSON.parse(raw) as GoogleDriveConfig;
+    if (!cfg.credentials) throw new Error('No Google Drive credentials configured');
+    const auth = new google.auth.GoogleAuth({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      credentials: cfg.credentials as any,
+      scopes: ['https://www.googleapis.com/auth/drive.file'],
+    });
+    return { drive: google.drive({ version: 'v3', auth }), folderId: cfg.folderId };
+  }
+
+  async testGoogleDriveConnection(): Promise<{ ok: boolean; email?: string; error?: string }> {
+    try {
+      const { drive } = await this.getDriveClient();
+      const about = await drive.about.get({ fields: 'user' });
+      return { ok: true, email: about.data.user?.emailAddress ?? undefined };
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async uploadToDrive(
+    filename: string,
+  ): Promise<{ ok: boolean; fileId?: string; webViewLink?: string; error?: string }> {
+    try {
+      const { drive, folderId } = await this.getDriveClient();
+      const filePath = path.join(this.backupsDir(), path.basename(filename));
+      if (!fs.existsSync(filePath)) return { ok: false, error: 'File not found' };
+      const fileStream = fs.createReadStream(filePath);
+      const res = await drive.files.create({
+        requestBody: {
+          name: path.basename(filename),
+          parents: folderId ? [folderId] : undefined,
+        },
+        media: { mimeType: 'application/octet-stream', body: fileStream },
+        fields: 'id,webViewLink',
+      });
+      return {
+        ok: true,
+        fileId: res.data.id ?? undefined,
+        webViewLink: res.data.webViewLink ?? undefined,
+      };
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   getSchedule(): ScheduleConfig {
@@ -109,12 +208,16 @@ export class BackupsService implements OnModuleInit {
     );
     const cmd = `PGPASSWORD='${password}' pg_dump -h ${host} -p ${port} -U ${user} -F p -f ${file} ${db}`;
     return new Promise((resolve) => {
-      exec(cmd, (err, stdout, stderr) => {
+      exec(cmd, async (err, _stdout, stderr) => {
         if (err) {
           resolve({ ok: false, error: stderr || String(err) });
-        } else {
-          resolve({ ok: true, file });
+          return;
         }
+        const cfg = this.getGoogleDriveConfig();
+        if (cfg.autoUpload && cfg.connected) {
+          await this.uploadToDrive(path.basename(file)).catch(() => {});
+        }
+        resolve({ ok: true, file });
       });
     });
   }

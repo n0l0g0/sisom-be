@@ -1,4 +1,5 @@
 {
+  "exclude": ["seed-demo.ts", "reset_data.ts", "add-room-contact.ts", "check_special_rooms.ts", "migrate-uploads-by-tenant.ts", "restore-contacts-db.ts"],
   "compilerOptions": {
     "module": "nodenext",
     "moduleResolution": "nodenext",

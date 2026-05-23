@@ -48,4 +48,36 @@ export class BackupsController {
   delete(@Param('name') name: string) {
     return this.backups.deleteFile(name);
   }
+
+  @Post('files/:name/upload-drive')
+  async uploadToDrive(@Param('name') name: string) {
+    return this.backups.uploadToDrive(name);
+  }
+
+  @Get('google-drive')
+  getGoogleDriveConfig() {
+    return this.backups.getGoogleDriveConfig();
+  }
+
+  @Post('google-drive')
+  setGoogleDriveConfig(
+    @Body()
+    body: {
+      folderId: string;
+      autoUpload: boolean;
+      credentials?: object | null;
+    },
+  ) {
+    return this.backups.setGoogleDriveConfig(body);
+  }
+
+  @Delete('google-drive')
+  removeGoogleDriveConfig() {
+    return this.backups.removeGoogleDriveConfig();
+  }
+
+  @Post('google-drive/test')
+  async testGoogleDriveConnection() {
+    return this.backups.testGoogleDriveConnection();
+  }
 }

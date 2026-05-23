@@ -104,24 +104,26 @@ export class InvoicesController {
   @Post(':id/settle')
   settleOne(
     @Param('id') id: string,
-    @Body() body: { method: 'DEPOSIT' | 'CASH'; paidAt?: string },
+    @Body() body: { method: 'DEPOSIT' | 'CASH'; paidAt?: string; slipImageUrl?: string },
   ) {
     const method = body?.method === 'DEPOSIT' ? 'DEPOSIT' : 'CASH';
     const paidAt = typeof body?.paidAt === 'string' ? body.paidAt : undefined;
-    return this.invoicesService.settle(id, method, paidAt);
+    const slipImageUrl = typeof body?.slipImageUrl === 'string' ? body.slipImageUrl : undefined;
+    return this.invoicesService.settle(id, method, paidAt, slipImageUrl);
   }
 
   @Post(':id/settle-partial')
   settlePartialOne(
     @Param('id') id: string,
-    @Body() body: { amount: number; paidAt?: string },
+    @Body() body: { amount: number; paidAt?: string; slipImageUrl?: string },
   ) {
     const amount = Number(body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new Error('amount must be a positive number');
     }
     const paidAt = typeof body?.paidAt === 'string' ? body.paidAt : undefined;
-    return this.invoicesService.settlePartial(id, amount, paidAt);
+    const slipImageUrl = typeof body?.slipImageUrl === 'string' ? body.slipImageUrl : undefined;
+    return this.invoicesService.settlePartial(id, amount, paidAt, slipImageUrl);
   }
 
   @Post(':id/unsettle')
@@ -217,6 +219,11 @@ export class InvoicesController {
   @Post('auto-send/run')
   runAutoSend() {
     return this.invoicesService.runAutoSend();
+  }
+
+  @Post('sent/run')
+  runMarkSent() {
+    return this.invoicesService.markSent();
   }
 
   @Post('overdue/run')

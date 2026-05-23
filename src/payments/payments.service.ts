@@ -77,7 +77,7 @@ export class PaymentsService {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { paidAt: 'desc' },
     });
   }
 

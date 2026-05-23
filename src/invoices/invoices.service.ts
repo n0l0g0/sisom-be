@@ -631,15 +631,10 @@ export class InvoicesService implements OnModuleInit {
       throw new BadRequestException('Invoice already exists for this period');
     }
 
-    const dormExtra = await this.settingsService.getDormExtra();
-    const monthlyDueDay = Number.isFinite(Number(dormExtra?.monthlyDueDay))
-      ? Number(dormExtra?.monthlyDueDay)
-      : 5;
-    const dueDateObj = new Date(
-      year,
-      Math.max(0, Math.min(11, month - 1)),
-      Math.max(1, Math.min(31, monthlyDueDay)),
-    );
+    // Due date = วันที่ 5 ของเดือนถัดจากเดือนบิล (เช่น บิลมีนาคม → 5 เมษายน)
+    const dueMonth = month === 12 ? 0 : month; // JS month index of next month
+    const dueYear = month === 12 ? year + 1 : year;
+    const dueDateObj = new Date(dueYear, dueMonth, 5);
 
     const invoice = await this.prisma.invoice.create({
       data: {
@@ -665,7 +660,7 @@ export class InvoicesService implements OnModuleInit {
     return invoice;
   }
 
-  async settle(id: string, method: 'DEPOSIT' | 'CASH', paidAt?: string) {
+  async settle(id: string, method: 'DEPOSIT' | 'CASH', paidAt?: string, slipImageUrl?: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: { contract: true },
@@ -710,6 +705,7 @@ export class InvoicesService implements OnModuleInit {
         invoiceId: id,
         amount: paymentAmount,
         slipBankRef: method,
+        slipImageUrl: slipImageUrl ?? null,
         status: PaymentStatus.VERIFIED,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
       },
@@ -753,7 +749,9 @@ export class InvoicesService implements OnModuleInit {
           amount: Number(full.totalAmount),
           month: monthLabel,
           type,
-        });
+          paidAt: paidAt ? new Date(paidAt) : new Date(),
+          slipImageUrl: slipImageUrl,
+        } as any);
       }
       if (tenant?.lineUserId && method === 'DEPOSIT') {
         const contract = await this.prisma.contract.findUnique({
@@ -771,7 +769,7 @@ export class InvoicesService implements OnModuleInit {
     return updated;
   }
 
-  async settlePartial(id: string, partialAmount: number, paidAt?: string) {
+  async settlePartial(id: string, partialAmount: number, paidAt?: string, slipImageUrl?: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
@@ -806,7 +804,8 @@ export class InvoicesService implements OnModuleInit {
       data: {
         invoiceId: id,
         amount: partialAmount,
-        slipBankRef: 'PARTIAL_CASH',
+        slipBankRef: slipImageUrl ? 'PARTIAL_TRANSFER' : 'PARTIAL_CASH',
+        slipImageUrl: slipImageUrl ?? null,
         status: PaymentStatus.VERIFIED,
         paidAt: paidAtDate,
       },
@@ -851,7 +850,9 @@ export class InvoicesService implements OnModuleInit {
         amount: partialAmount,
         month: monthLabel,
         type: 'NORMAL',
-      });
+        paidAt: paidAtDate,
+        slipImageUrl: slipImageUrl,
+      } as any);
       // Override the generic message with the partial-specific one that includes remaining balance
       const targets = await this.prisma.user.findMany({
         where: { role: { in: ['OWNER', 'ADMIN', 'STAFF'] }, lineUserId: { not: null } },
@@ -1004,6 +1005,10 @@ export class InvoicesService implements OnModuleInit {
               },
             },
           },
+        },
+        payments: {
+          where: { status: PaymentStatus.VERIFIED },
+          select: { amount: true },
         },
       },
     });
@@ -1923,28 +1928,33 @@ export class InvoicesService implements OnModuleInit {
     };
   }
 
+  async markSent() {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    const result = await this.prisma.invoice.updateMany({
+      where: { status: InvoiceStatus.DRAFT, month, year },
+      data: { status: InvoiceStatus.SENT },
+    });
+    return { ok: true, count: result.count };
+  }
+
   async markOverdue() {
     const now = new Date();
-    // Mark as OVERDUE if the due date has passed (strictly less than now)
-    // e.g. if Due Date is 5th, on 6th (now), 5th < 6th, so it is overdue.
-    const cutoffDate = new Date(now);
-
-    const ids = await this.prisma.invoice.findMany({
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    // Mark SENT invoices from any month prior to the current month as OVERDUE
+    const result = await this.prisma.invoice.updateMany({
       where: {
         status: InvoiceStatus.SENT,
-        dueDate: { lt: cutoffDate },
-      },
-      select: { id: true },
-    });
-    if (ids.length === 0) return { ok: true, count: 0 };
-    await this.prisma.invoice.updateMany({
-      where: {
-        status: InvoiceStatus.SENT,
-        dueDate: { lt: cutoffDate },
+        OR: [
+          { year: { lt: year } },
+          { year, month: { lt: month } },
+        ],
       },
       data: { status: InvoiceStatus.OVERDUE },
     });
-    return { ok: true, count: ids.length };
+    return { ok: true, count: result.count };
   }
 
   private getSchedulesFilePath(): string {
@@ -2170,7 +2180,14 @@ export class InvoicesService implements OnModuleInit {
           await this.runAutoSend();
         } catch {}
       });
-      cron.schedule('15 0 * * *', async () => {
+      // วันที่ 26 ของทุกเดือน: DRAFT → SENT
+      cron.schedule('1 0 26 * *', async () => {
+        try {
+          await this.markSent();
+        } catch {}
+      });
+      // วันที่ 5 ของทุกเดือน: SENT (เดือนก่อน) → OVERDUE
+      cron.schedule('1 0 5 * *', async () => {
         try {
           await this.markOverdue();
         } catch {}

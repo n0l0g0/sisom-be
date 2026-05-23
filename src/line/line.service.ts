@@ -82,6 +82,13 @@ type MaintenanceWithRoomContracts = Prisma.MaintenanceRequestGetPayload<{
   };
 }>;
 
+/** Format date as plain numbers in Bangkok timezone: DD/MM/YYYY HH:MM */
+function formatBkkDateTime(date: Date): string {
+  const bkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(bkk.getDate())}/${pad(bkk.getMonth() + 1)}/${bkk.getFullYear() + 543}`;
+}
+
 @Injectable()
 export class LineService implements OnModuleInit {
   private _client: messagingApi.MessagingApiClient;
@@ -799,6 +806,7 @@ export class LineService implements OnModuleInit {
     month: string;
     slipUrl?: string;
     type?: 'NEW' | 'NORMAL';
+    paidAt?: Date | string;
   }) {
     const staff = await this.prisma.user.findMany({
       where: {
@@ -815,10 +823,13 @@ export class LineService implements OnModuleInit {
       maximumFractionDigits: 2,
     });
 
+    const paidAtDate = data.paidAt ? new Date(data.paidAt) : new Date();
+    const timeStr = formatBkkDateTime(paidAtDate);
+
     if (data.type === 'NEW') {
-      message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ ยอด ${amountStr} บาท แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเข้าอยู่ใหม่ ยอด ${amountStr} บาท\nโอนเข้าบัญชีเมื่อ ${timeStr} แล้วครับ`;
     } else {
-      message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} ยอด ${amountStr} บาท แล้วครับ`;
+      message = `${buildingPart} ${data.room} ชำระค่าห้องเดือน ${data.month} ยอด ${amountStr} บาท\nโอนเข้าบัญชีเมื่อ ${timeStr} แล้วครับ`;
     }
 
     const permKey = LineService.LINE_NOTIFY_PERMISSIONS.PAYMENT_VERIFIED;
@@ -6085,9 +6096,7 @@ export class LineService implements OnModuleInit {
           }
           if (isDup) {
             const when = verify.transactedAt
-              ? new Date(verify.transactedAt).toLocaleString('th-TH', {
-                  timeZone: 'Asia/Bangkok',
-                })
+              ? formatBkkDateTime(new Date(verify.transactedAt))
               : '—';
             const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
             const roomNum =
@@ -6166,6 +6175,7 @@ export class LineService implements OnModuleInit {
           const when = verify.transactedAt
             ? new Date(verify.transactedAt).toLocaleString('th-TH', {
                 timeZone: 'Asia/Bangkok',
+                hour12: false,
               })
             : '—';
           const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
@@ -6210,6 +6220,7 @@ export class LineService implements OnModuleInit {
             month: period,
             slipUrl,
             type,
+            paidAt: verify.transactedAt ? new Date(verify.transactedAt) : new Date(),
           });
           // Clear payment context immediately so user can start new flow (e.g. แจ้งซ่อม)
           if (userId) {
@@ -6252,9 +6263,7 @@ export class LineService implements OnModuleInit {
     } else if (verify.duplicate) {
       try {
         const when = verify.transactedAt
-          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
-              timeZone: 'Asia/Bangkok',
-            })
+          ? formatBkkDateTime(new Date(verify.transactedAt))
           : '—';
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
         const roomNum =
@@ -6293,9 +6302,7 @@ export class LineService implements OnModuleInit {
     } else {
       try {
         const when = verify.transactedAt
-          ? new Date(verify.transactedAt).toLocaleString('th-TH', {
-              timeZone: 'Asia/Bangkok',
-            })
+          ? formatBkkDateTime(new Date(verify.transactedAt))
           : '—';
         const period = `${this.thaiMonth(invoice.month)} ${invoice.year}`;
         const roomNum =
@@ -7070,9 +7077,7 @@ export class LineService implements OnModuleInit {
   ) {
     const amtStr =
       typeof amount === 'number' ? amount.toLocaleString() : undefined;
-    const whenStr = (when || new Date()).toLocaleString('th-TH', {
-      timeZone: 'Asia/Bangkok',
-    });
+    const whenStr = formatBkkDateTime(when || new Date());
     const flex = this.buildSlipFlex('SUCCESS', {
       amount: amtStr,
       room,
@@ -7096,9 +7101,7 @@ export class LineService implements OnModuleInit {
     );
     if (!targets.length) return;
     const paidAt = params.paidAt || new Date();
-    const whenStr = paidAt.toLocaleString('th-TH', {
-      timeZone: 'Asia/Bangkok',
-    });
+    const whenStr = formatBkkDateTime(paidAt);
     const amountStr =
       typeof params.amount === 'number'
         ? params.amount.toLocaleString('th-TH', {

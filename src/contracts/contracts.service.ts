@@ -103,12 +103,26 @@ export class ContractsService {
       where.isActive = filters.isActive;
     }
     if (filters?.q) {
-      where.room = {
-        number: {
-          contains: filters.q,
-          mode: 'insensitive',
-        },
-      };
+      const slashIdx = filters.q.indexOf('/');
+      if (slashIdx !== -1) {
+        const buildingQ = filters.q.slice(0, slashIdx).trim();
+        const roomQ = filters.q.slice(slashIdx + 1).trim();
+        where.room = {
+          ...(roomQ ? { number: { contains: roomQ, mode: 'insensitive' } } : {}),
+          ...(buildingQ ? {
+            building: {
+              OR: [
+                { name: { contains: buildingQ, mode: 'insensitive' } },
+                { code: { contains: buildingQ, mode: 'insensitive' } },
+              ],
+            },
+          } : {}),
+        };
+      } else {
+        where.room = {
+          number: { contains: filters.q, mode: 'insensitive' },
+        };
+      }
     }
     return this.prisma.contract
       .findMany({

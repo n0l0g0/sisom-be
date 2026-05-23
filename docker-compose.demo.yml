@@ -1,0 +1,60 @@
+version: "2.2"
+services:
+  backend:
+    build: .
+    container_name: sisom-demo-backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3012:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - UPLOAD_DIR=/app/uploads
+      - JWT_SECRET=demo-jwt-secret-washqueue-2024
+      - INTERNAL_API_KEY=demo-internal-key-washqueue-2024
+      - ENCRYPTION_KEY=653623471608e67d213fa52ece982c135e0bc6915dd209d3462c261d6835be71
+      - DATABASE_URL=postgresql://admin:password@172.18.0.1:5433/sisomapt_demo?schema=public
+      - PUBLIC_API_URL=https://demo.washqueue.com
+      - INTERNAL_API_URL=http://sisom-demo-backend:3000
+      - API_URL=https://demo.washqueue.com
+      - OWNER_API_URL=http://owner13rent-backend:3000
+      # LINE ปิด — demo ใช้แค่ CMS login
+      - LINE_CHANNEL_ACCESS_TOKEN=
+      - LINE_CHANNEL_SECRET=
+      - LIFF_ID=
+      - SLIPOK_API_KEY=
+      - SLIPOK_CHECK_URL=
+      - LINE_TENANT_ID=
+      - LINE_STAFF_USER_IDS=
+      - LINE_RICHMENU_GENERAL_ID=
+      - LINE_RICHMENU_TENANT_ID=
+      - LINE_RICHMENU_ADMIN_ID=
+    volumes:
+      - /root/uploads-demo:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - sisom-demo_default
+      - sisom-be_default
+
+  cms-gateway:
+    build: ./cms-gateway
+    container_name: sisom-demo-gateway
+    environment:
+      - PORT=3011
+      - TARGET_URL=http://sisom-demo-backend:3000
+      - JWT_SECRET=demo-jwt-secret-washqueue-2024
+    restart: unless-stopped
+    networks:
+      - sisom-demo_default
+
+networks:
+  sisom-demo_default:
+    external: true
+  sisom-be_default:
+    external: true
