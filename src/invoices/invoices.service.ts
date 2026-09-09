@@ -674,10 +674,8 @@ export class InvoicesService implements OnModuleInit {
       throw new BadRequestException('Invoice already exists for this period');
     }
 
-    // Due date = วันที่ 5 ของเดือนถัดจากเดือนบิล (เช่น บิลมีนาคม → 5 เมษายน)
-    const dueMonth = month === 12 ? 0 : month; // JS month index of next month
-    const dueYear = month === 12 ? year + 1 : year;
-    const dueDateObj = new Date(dueYear, dueMonth, 5);
+    // Due date = วันที่ 5 ของเดือนบิล
+    const dueDateObj = new Date(year, month - 1, 5);
 
     const invoice = await this.prisma.invoice.create({
       data: {
@@ -1988,16 +1986,10 @@ export class InvoicesService implements OnModuleInit {
 
   async markOverdue() {
     const now = new Date();
-    const month = now.getMonth() + 1;
-    const year = now.getFullYear();
-    // Mark SENT invoices from any month prior to the current month as OVERDUE
     const result = await this.prisma.invoice.updateMany({
       where: {
-        status: InvoiceStatus.SENT,
-        OR: [
-          { year: { lt: year } },
-          { year, month: { lt: month } },
-        ],
+        status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT] },
+        dueDate: { lt: now },
       },
       data: { status: InvoiceStatus.OVERDUE },
     });
@@ -2233,12 +2225,13 @@ export class InvoicesService implements OnModuleInit {
           await this.markSent();
         } catch {}
       });
-      // วันที่ 5 ของทุกเดือน: SENT (เดือนก่อน) → OVERDUE
-      cron.schedule('1 0 5 * *', async () => {
+      // ตรวจทุกวัน และ catch up หาก backend เริ่มหลังวันครบกำหนด
+      cron.schedule('1 0 * * *', async () => {
         try {
           await this.markOverdue();
         } catch {}
       });
+      void this.markOverdue().catch(() => {});
       cron.schedule('0 9 * * *', async () => {
         try {
           await this.notifyPaymentSchedules();
