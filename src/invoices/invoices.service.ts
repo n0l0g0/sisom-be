@@ -151,9 +151,22 @@ export class InvoicesService implements OnModuleInit {
       pm = 12;
       py -= 1;
     }
-    const prevReading = await this.prisma.meterReading.findFirst({
+    // หา prevReading จากเดือนก่อนหน้าโดยตรงก่อน ถ้าไม่มีให้ fallback หาเดือนล่าสุดที่มีข้อมูล
+    let prevReading = await this.prisma.meterReading.findFirst({
       where: { roomId, month: pm, year: py },
     });
+    if (!prevReading && currentReading) {
+      prevReading = await this.prisma.meterReading.findFirst({
+        where: {
+          roomId,
+          OR: [
+            { year: { lt: inv.year } },
+            { year: inv.year, month: { lt: inv.month } },
+          ],
+        },
+        orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      });
+    }
 
     const electricUsage =
       currentReading && prevReading
@@ -265,6 +278,14 @@ export class InvoicesService implements OnModuleInit {
 
     waterAmount = this.round(waterAmount);
     electricAmount = this.round(electricAmount);
+    // ผู้เช่าใหม่: บิลของ "เดือนที่เริ่มสัญญา" ไม่คิดค่าน้ำ-ค่าไฟทั้งสิ้น (รวมขั้นต่ำ)
+    if (inv.contract?.startDate) {
+      const sd = new Date(inv.contract.startDate);
+      if (sd.getUTCFullYear() === inv.year && sd.getUTCMonth() + 1 === inv.month) {
+        waterAmount = 0;
+        electricAmount = 0;
+      }
+    }
     const itemsTotal = this.round(
       (inv.items || []).reduce((sum, it) => sum + Number(it.amount || 0), 0),
     );
@@ -364,13 +385,26 @@ export class InvoicesService implements OnModuleInit {
       prevYear = year - 1;
     }
 
-    const prevReading = await this.prisma.meterReading.findFirst({
+    // หา prevReading จากเดือนก่อนหน้าโดยตรงก่อน ถ้าไม่มีให้ fallback หาเดือนล่าสุดที่มีข้อมูล
+    let prevReading = await this.prisma.meterReading.findFirst({
       where: {
         roomId,
         month: prevMonth,
         year: prevYear,
       },
     });
+    if (!prevReading) {
+      prevReading = await this.prisma.meterReading.findFirst({
+        where: {
+          roomId,
+          OR: [
+            { year: { lt: year } },
+            { year, month: { lt: month } },
+          ],
+        },
+        orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      });
+    }
 
     const electricUsage = prevReading
       ? Number(currentReading.electricReading) -
@@ -606,6 +640,15 @@ export class InvoicesService implements OnModuleInit {
       usage < 5
     ) {
       waterAmount = 35;
+    }
+
+    // ผู้เช่าใหม่: บิลของ "เดือนที่เริ่มสัญญา" ไม่คิดค่าน้ำ-ค่าไฟทั้งสิ้น (รวมขั้นต่ำ)
+    {
+      const sd = new Date(contract.startDate);
+      if (sd.getUTCFullYear() === year && sd.getUTCMonth() + 1 === month) {
+        electricAmount = 0;
+        waterAmount = 0;
+      }
     }
 
     const rentAmount = this.round(Number(contract.currentRent));
@@ -1062,6 +1105,10 @@ export class InvoicesService implements OnModuleInit {
               },
             },
           },
+        },
+        payments: {
+          where: { status: 'VERIFIED' },
+          select: { id: true, amount: true, status: true, paidAt: true },
         },
       },
       orderBy: { createdAt: 'desc' },

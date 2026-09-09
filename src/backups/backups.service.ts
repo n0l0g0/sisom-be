@@ -10,10 +10,19 @@ type ScheduleConfig = {
   minute?: number;
 };
 
+type OAuth2Config = {
+  clientId: string;
+  clientSecret: string;
+  refreshToken?: string;
+  accessToken?: string;
+  expiryDate?: number;
+};
+
 type GoogleDriveConfig = {
   folderId: string;
   autoUpload: boolean;
   credentials?: object;
+  oauth2?: OAuth2Config;
 };
 
 @Injectable()
@@ -44,17 +53,20 @@ export class BackupsService implements OnModuleInit {
     return path.join(this.backupsDir(), 'gdrive.json');
   }
 
-  getGoogleDriveConfig(): { folderId: string; autoUpload: boolean; connected: boolean } {
+  getGoogleDriveConfig(): { folderId: string; autoUpload: boolean; connected: boolean; authType: string } {
     try {
       const raw = fs.readFileSync(this.driveConfigPath(), 'utf8');
       const cfg = JSON.parse(raw) as GoogleDriveConfig;
+      const hasServiceAccount = !!(cfg.credentials && cfg.folderId);
+      const hasOAuth2 = !!(cfg.oauth2?.clientId && cfg.oauth2?.refreshToken && cfg.folderId);
       return {
         folderId: cfg.folderId || '',
         autoUpload: cfg.autoUpload ?? false,
-        connected: !!(cfg.credentials && cfg.folderId),
+        connected: hasServiceAccount || hasOAuth2,
+        authType: cfg.oauth2 ? 'oauth2' : (cfg.credentials ? 'service_account' : 'none'),
       };
     } catch {
-      return { folderId: '', autoUpload: false, connected: false };
+      return { folderId: '', autoUpload: false, connected: false, authType: 'none' };
     }
   }
 
@@ -84,16 +96,95 @@ export class BackupsService implements OnModuleInit {
     return { ok: true };
   }
 
+  private appUrl() {
+    return (process.env.API_URL || '').replace(/\/$/, '');
+  }
+
+  private oauthRedirectUri() {
+    return `${this.appUrl()}/api/backups/google-drive/oauth/callback`;
+  }
+
+  initOAuth2(data: {
+    clientId: string;
+    clientSecret: string;
+    folderId: string;
+    autoUpload: boolean;
+  }): string {
+    const cfg: GoogleDriveConfig = {
+      folderId: data.folderId,
+      autoUpload: data.autoUpload,
+      oauth2: { clientId: data.clientId, clientSecret: data.clientSecret },
+    };
+    fs.writeFileSync(this.driveConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
+    const oauth2Client = new google.auth.OAuth2(
+      data.clientId,
+      data.clientSecret,
+      this.oauthRedirectUri(),
+    );
+    return oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/drive'],
+      prompt: 'consent',
+    });
+  }
+
+  async exchangeOAuth2Code(code: string): Promise<void> {
+    const raw = fs.readFileSync(this.driveConfigPath(), 'utf8');
+    const cfg = JSON.parse(raw) as GoogleDriveConfig;
+    if (!cfg.oauth2?.clientId || !cfg.oauth2?.clientSecret) {
+      throw new Error('OAuth2 credentials not configured');
+    }
+    const oauth2Client = new google.auth.OAuth2(
+      cfg.oauth2.clientId,
+      cfg.oauth2.clientSecret,
+      this.oauthRedirectUri(),
+    );
+    const { tokens } = await oauth2Client.getToken(code);
+    cfg.oauth2.refreshToken = tokens.refresh_token ?? cfg.oauth2.refreshToken;
+    cfg.oauth2.accessToken = tokens.access_token ?? undefined;
+    cfg.oauth2.expiryDate = tokens.expiry_date ?? undefined;
+    fs.writeFileSync(this.driveConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
+  }
+
   private async getDriveClient() {
     const raw = fs.readFileSync(this.driveConfigPath(), 'utf8');
     const cfg = JSON.parse(raw) as GoogleDriveConfig;
-    if (!cfg.credentials) throw new Error('No Google Drive credentials configured');
-    const auth = new google.auth.GoogleAuth({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      credentials: cfg.credentials as any,
-      scopes: ['https://www.googleapis.com/auth/drive.file'],
-    });
-    return { drive: google.drive({ version: 'v3', auth }), folderId: cfg.folderId };
+
+    if (cfg.oauth2?.clientId && cfg.oauth2?.clientSecret) {
+      if (!cfg.oauth2.refreshToken) throw new Error('Not authorized yet — please connect Google Drive again');
+      const oauth2Client = new google.auth.OAuth2(
+        cfg.oauth2.clientId,
+        cfg.oauth2.clientSecret,
+      );
+      oauth2Client.setCredentials({
+        refresh_token: cfg.oauth2.refreshToken,
+        access_token: cfg.oauth2.accessToken,
+        expiry_date: cfg.oauth2.expiryDate,
+      });
+      oauth2Client.on('tokens', (tokens) => {
+        try {
+          const current = JSON.parse(fs.readFileSync(this.driveConfigPath(), 'utf8')) as GoogleDriveConfig;
+          if (current.oauth2) {
+            if (tokens.refresh_token) current.oauth2.refreshToken = tokens.refresh_token;
+            if (tokens.access_token) current.oauth2.accessToken = tokens.access_token;
+            if (tokens.expiry_date) current.oauth2.expiryDate = tokens.expiry_date;
+            fs.writeFileSync(this.driveConfigPath(), JSON.stringify(current, null, 2));
+          }
+        } catch {}
+      });
+      return { drive: google.drive({ version: 'v3', auth: oauth2Client }), folderId: cfg.folderId };
+    }
+
+    if (cfg.credentials) {
+      const auth = new google.auth.GoogleAuth({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        credentials: cfg.credentials as any,
+        scopes: ['https://www.googleapis.com/auth/drive'],
+      });
+      return { drive: google.drive({ version: 'v3', auth }), folderId: cfg.folderId };
+    }
+
+    throw new Error('No Google Drive credentials configured');
   }
 
   async testGoogleDriveConnection(): Promise<{ ok: boolean; email?: string; error?: string }> {
@@ -115,6 +206,7 @@ export class BackupsService implements OnModuleInit {
       if (!fs.existsSync(filePath)) return { ok: false, error: 'File not found' };
       const fileStream = fs.createReadStream(filePath);
       const res = await drive.files.create({
+        supportsAllDrives: true,
         requestBody: {
           name: path.basename(filename),
           parents: folderId ? [folderId] : undefined,

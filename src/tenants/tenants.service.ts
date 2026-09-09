@@ -69,15 +69,37 @@ export class TenantsService {
         },
         include: {
           contracts: {
-            // When including history, we want ALL contracts. 
-            // When not, we usually want only active ones? 
-            // Actually, usually fetching a tenant should show their contract history anyway if we click details.
-            // But the list view usually filters tenants.
-            // Let's keep fetching all contracts for the tenant so we can see history.
             include: {
-              room: true,
+              room: {
+                include: { building: true },
+              },
               invoices: {
-                select: { status: true, totalAmount: true },
+                select: {
+                  id: true,
+                  month: true,
+                  year: true,
+                  status: true,
+                  dueDate: true,
+                  totalAmount: true,
+                  createdAt: true,
+                  updatedAt: true,
+                  payments: {
+                    select: {
+                      id: true,
+                      amount: true,
+                      paidAt: true,
+                      status: true,
+                      slipBankRef: true,
+                      createdAt: true,
+                    },
+                    orderBy: { paidAt: 'desc' },
+                  },
+                },
+                orderBy: [
+                  { year: 'desc' },
+                  { month: 'desc' },
+                  { createdAt: 'desc' },
+                ],
               },
             },
             orderBy: { startDate: 'desc' },

@@ -8,12 +8,15 @@ type SlipOkResult = {
   raw?: unknown;
   message?: string;
   amount?: number;
+  sourceName?: string;
   sourceBank?: string;
   sourceAccount?: string;
+  destName?: string;
   destBank?: string;
   destAccount?: string;
   transactedAt?: string;
   duplicate?: boolean;
+  checkedAt?: string;
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -53,6 +56,137 @@ const pickNumber = (
   return undefined;
 };
 
+const pickNestedString = (
+  obj: Record<string, unknown>,
+  path: string[],
+): string | undefined => {
+  let current: unknown = obj;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  if (typeof current === 'string' && current.trim()) return current.trim();
+  if (typeof current === 'number' && Number.isFinite(current)) {
+    return String(current);
+  }
+  return undefined;
+};
+
+const pickPartyName = (
+  detail: Record<string, unknown>,
+  partyKey: 'sender' | 'receiver',
+): string | undefined => {
+  const party = isRecord(detail[partyKey]) ? detail[partyKey] : {};
+  const direct = pickString(party, ['displayName', 'fullName']);
+  if (direct) return direct;
+  const name = isRecord(party.name) ? party.name : {};
+  return pickString(name, ['displayName', 'fullName', 'th', 'en', 'value']);
+};
+
+const parseSlipOkResult = (
+  dataUnknown: unknown,
+  responseOk: boolean,
+): SlipOkResult => {
+  const root = isRecord(dataUnknown) ? dataUnknown : {};
+  const detail = isRecord(root.data) ? root.data : root;
+  const text =
+    pickString(root, ['message', 'statusText']) ||
+    pickString(detail, ['message', 'statusText']) ||
+    (responseOk ? 'OK' : 'ERROR');
+  const code = pickNumber(root, ['code']) ?? pickNumber(detail, ['code']);
+  const successFlag = root.success === true || detail.success === true;
+  const ok =
+    responseOk &&
+    code !== 1012 &&
+    (successFlag ||
+      code === 200 ||
+      /Correct QR Verification|Valid Amount|OK|success|valid|✅/i.test(text));
+  const duplicate = code === 1012;
+  const bankRef =
+    pickString(detail, ['bankRef', 'transRef', 'reference', 'ref']) ||
+    pickString(root, ['bankRef', 'transRef', 'reference', 'ref']);
+  const amount = pickNumber(detail, [
+    'amount',
+    'paidAmount',
+    'total',
+    'value',
+    'price',
+  ]);
+  const sourceName = pickPartyName(detail, 'sender');
+  const sourceBank = pickString(detail, [
+    'sourceBank',
+    'sendingBank',
+    'senderBank',
+    'fromBank',
+    'originBank',
+    'payerBank',
+    'srcBank',
+    'bank_from',
+  ]);
+  const sourceAccount =
+    pickString(detail, [
+      'sourceAccount',
+      'senderAccount',
+      'fromAccount',
+      'originAccount',
+      'payerAccount',
+      'srcAccount',
+      'accountFrom',
+    ]) || pickNestedString(detail, ['sender', 'account', 'value']);
+  const destBank = pickString(detail, [
+    'destinationBank',
+    'receivingBank',
+    'receiverBank',
+    'toBank',
+    'bank',
+    'bankName',
+    'bank_code',
+  ]);
+  const destName = pickPartyName(detail, 'receiver');
+  const destAccount =
+    pickString(detail, [
+      'destinationAccount',
+      'receiverAccount',
+      'toAccount',
+      'accountNo',
+      'account',
+    ]) || pickNestedString(detail, ['receiver', 'account', 'value']);
+  const date = pickString(detail, ['date', 'transDate']);
+  const time = pickString(detail, ['time', 'transTime']);
+  const transactedAt =
+    pickString(detail, [
+      'transactedAt',
+      'transTimestamp',
+      'datetime',
+      'timestamp',
+    ]) || (date && time ? `${date} ${time}` : undefined);
+  const checkedAtRaw = duplicate
+    ? text.match(/(?:เมื่อ|when)\s+(.+)$/i)?.[1]?.trim()
+    : undefined;
+  const checkedAtDate = checkedAtRaw ? new Date(checkedAtRaw) : undefined;
+  const checkedAt =
+    checkedAtDate && !Number.isNaN(checkedAtDate.getTime())
+      ? checkedAtDate.toISOString()
+      : checkedAtRaw;
+
+  return {
+    ok,
+    bankRef,
+    raw: root,
+    message: text,
+    amount,
+    sourceName,
+    sourceBank,
+    sourceAccount,
+    destName,
+    destBank,
+    destAccount,
+    transactedAt,
+    duplicate,
+    checkedAt,
+  };
+};
+
 @Injectable()
 export class SlipOkService {
   constructor(private readonly settingsService: SettingsService) {}
@@ -80,82 +214,14 @@ export class SlipOkService {
           'x-authorization': apiKey,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ ...payload, log: true }),
+        body: JSON.stringify({ ...payload, log: false }),
       });
       const dataUnknown: unknown = await res.json().catch(() => ({}));
-      const data = isRecord(dataUnknown) ? dataUnknown : {};
-      const text =
-        pickString(data, ['message', 'statusText']) ||
-        (res.ok ? 'OK' : 'ERROR');
-      const ok =
-        res.ok &&
-        /Correct QR Verification|Valid Amount|OK|success|valid/i.test(
-          String(text),
-        );
-      const duplicate = pickNumber(data, ['code']) === 1012;
-      const bankRef = pickString(data, ['bankRef', 'reference', 'ref']);
-      const amountRaw = pickNumber(data, [
-        'amount',
-        'paidAmount',
-        'total',
-        'value',
-        'price',
-      ]);
-      const amountVal = amountRaw ? amountRaw : undefined;
-      const sourceBank = pickString(data, [
-        'sourceBank',
-        'senderBank',
-        'fromBank',
-        'originBank',
-        'payerBank',
-        'srcBank',
-        'bank_from',
-      ]);
-      const sourceAccount = pickString(data, [
-        'sourceAccount',
-        'senderAccount',
-        'fromAccount',
-        'originAccount',
-        'payerAccount',
-        'srcAccount',
-        'accountFrom',
-      ]);
-      const destBank = pickString(data, [
-        'destinationBank',
-        'receiverBank',
-        'toBank',
-        'bank',
-        'bankName',
-        'bank_code',
-      ]);
-      const destAccount = pickString(data, [
-        'destinationAccount',
-        'receiverAccount',
-        'toAccount',
-        'accountNo',
-        'account',
-      ]);
-      const date = pickString(data, ['date']);
-      const time = pickString(data, ['time']);
-      const transactedAt =
-        pickString(data, ['transactedAt', 'datetime', 'timestamp']) ||
-        (date && time ? `${date} ${time}` : undefined);
-      if (!ok) {
-        this.logger.warn(`SlipOK verification failed: ${text}`);
+      const result = parseSlipOkResult(dataUnknown, res.ok);
+      if (!result.ok) {
+        this.logger.warn(`SlipOK verification failed: ${result.message}`);
       }
-      return {
-        ok,
-        bankRef,
-        raw: data,
-        message: String(text),
-        amount: amountVal,
-        sourceBank,
-        sourceAccount,
-        destBank,
-        destAccount,
-        transactedAt,
-        duplicate,
-      };
+      return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.warn(`SlipOK request error: ${msg}`);
@@ -175,7 +241,7 @@ export class SlipOkService {
       const blob = new Blob([buf], { type: 'image/jpeg' });
       const fd = new FormData();
       fd.append('files', blob, 'slip.jpg');
-      fd.append('log', 'true');
+      fd.append('log', 'false');
       if (typeof amount === 'number') {
         fd.append('amount', String(amount));
       }
@@ -191,79 +257,11 @@ export class SlipOkService {
         body: fd,
       });
       const dataUnknown: unknown = await res.json().catch(() => ({}));
-      const data = isRecord(dataUnknown) ? dataUnknown : {};
-      const text =
-        pickString(data, ['message', 'statusText']) ||
-        (res.ok ? 'OK' : 'ERROR');
-      const ok =
-        res.ok &&
-        /Correct QR Verification|Valid Amount|OK|success|valid/i.test(
-          String(text),
-        );
-      const duplicate = pickNumber(data, ['code']) === 1012;
-      const bankRef = pickString(data, ['bankRef', 'reference', 'ref']);
-      const amountRaw = pickNumber(data, [
-        'amount',
-        'paidAmount',
-        'total',
-        'value',
-        'price',
-      ]);
-      const amountVal = amountRaw ? amountRaw : undefined;
-      const sourceBank = pickString(data, [
-        'sourceBank',
-        'senderBank',
-        'fromBank',
-        'originBank',
-        'payerBank',
-        'srcBank',
-        'bank_from',
-      ]);
-      const sourceAccount = pickString(data, [
-        'sourceAccount',
-        'senderAccount',
-        'fromAccount',
-        'originAccount',
-        'payerAccount',
-        'srcAccount',
-        'accountFrom',
-      ]);
-      const destBank = pickString(data, [
-        'destinationBank',
-        'receiverBank',
-        'toBank',
-        'bank',
-        'bankName',
-        'bank_code',
-      ]);
-      const destAccount = pickString(data, [
-        'destinationAccount',
-        'receiverAccount',
-        'toAccount',
-        'accountNo',
-        'account',
-      ]);
-      const date = pickString(data, ['date']);
-      const time = pickString(data, ['time']);
-      const transactedAt =
-        pickString(data, ['transactedAt', 'datetime', 'timestamp']) ||
-        (date && time ? `${date} ${time}` : undefined);
-      if (!ok) {
-        this.logger.warn(`SlipOK verification failed: ${text}`);
+      const result = parseSlipOkResult(dataUnknown, res.ok);
+      if (!result.ok) {
+        this.logger.warn(`SlipOK verification failed: ${result.message}`);
       }
-      return {
-        ok,
-        bankRef,
-        raw: data,
-        message: String(text),
-        amount: amountVal,
-        sourceBank,
-        sourceAccount,
-        destBank,
-        destAccount,
-        transactedAt,
-        duplicate,
-      };
+      return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.warn(`SlipOK data request error: ${msg}`);

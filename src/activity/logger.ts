@@ -164,3 +164,15 @@ export const softDeleteRecord = (model: string, id: string, snapshot?: any) => {
     details: { snapshot },
   });
 };
+
+export const restoreFromDeletedStore = (model: string, id: string) => {
+  try {
+    const store = readDeletedStore();
+    if (!store[model]?.ids) return;
+    const set = new Set<string>(store[model].ids);
+    if (!set.has(id)) return;
+    set.delete(id);
+    store[model] = { ids: Array.from(set) };
+    writeDeletedStore(store);
+  } catch {}
+};

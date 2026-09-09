@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LineService } from '../line/line.service';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
-import { RoomStatus, Prisma } from '@prisma/client';
+import { RoomStatus, TenantStatus, InvoiceStatus, Prisma } from '@prisma/client';
 import {
   appendLog,
   readDeletedStore,
@@ -289,20 +289,31 @@ export class ContractsService {
         },
       });
 
-      // If contract is set to inactive (Move Out), clear all room contacts for this room
       if (!updateContractDto.isActive) {
-        // Find contacts with lineUserId to unlink rich menu
-        const contacts = await this.prisma.roomContact.findMany({
-          where: { roomId: contract.roomId },
+        // Cancel all non-paid invoices for this contract
+        await this.prisma.invoice.updateMany({
+          where: {
+            contractId: contract.id,
+            status: { in: [InvoiceStatus.DRAFT, InvoiceStatus.SENT, InvoiceStatus.OVERDUE] },
+          },
+          data: { status: InvoiceStatus.CANCELLED },
         });
-        
-        // Delete all contacts
+
+        // Clear room contacts
         await this.prisma.roomContact.deleteMany({
           where: { roomId: contract.roomId },
         });
-        
-        // Note: Rich Menu unlinking is handled by a separate service usually, 
-        // or we could emit an event. For now, we just ensure data is clean.
+
+        // Set tenant to MOVED_OUT if they have no remaining active contracts
+        const remainingActive = await this.prisma.contract.count({
+          where: { tenantId: contract.tenantId, isActive: true },
+        });
+        if (remainingActive === 0) {
+          await this.prisma.tenant.update({
+            where: { id: contract.tenantId },
+            data: { status: TenantStatus.MOVED_OUT },
+          });
+        }
       }
     }
 

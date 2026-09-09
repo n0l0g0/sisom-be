@@ -5,6 +5,7 @@ import {
   Body,
   Delete,
   Param,
+  Query,
   Res,
 } from '@nestjs/common';
 import { BackupsService } from './backups.service';
@@ -79,5 +80,41 @@ export class BackupsController {
   @Post('google-drive/test')
   async testGoogleDriveConnection() {
     return this.backups.testGoogleDriveConnection();
+  }
+
+  @Get('google-drive/oauth/url')
+  getOAuthUrl(
+    @Query('clientId') clientId: string,
+    @Query('clientSecret') clientSecret: string,
+    @Query('folderId') folderId: string,
+    @Query('autoUpload') autoUpload: string,
+  ) {
+    const url = this.backups.initOAuth2({
+      clientId,
+      clientSecret,
+      folderId,
+      autoUpload: autoUpload === 'true',
+    });
+    return { url };
+  }
+
+  @Get('google-drive/oauth/callback')
+  async oauthCallback(
+    @Query('code') code: string,
+    @Query('error') error: string,
+    @Res() res: Response,
+  ) {
+    const appUrl = (process.env.API_URL || '').replace(/\/$/, '');
+    const redirectBase = `${appUrl}/settings/backups`;
+    if (error) {
+      return res.redirect(`${redirectBase}?drive_error=${encodeURIComponent(error)}`);
+    }
+    try {
+      await this.backups.exchangeOAuth2Code(code);
+      return res.redirect(`${redirectBase}?drive_connected=1`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return res.redirect(`${redirectBase}?drive_error=${encodeURIComponent(msg)}`);
+    }
   }
 }

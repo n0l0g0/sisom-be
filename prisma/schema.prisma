@@ -93,6 +93,9 @@ model MaintenanceRequest {
 model Tenant {
   id            String    @id @default(cuid())
   name          String
+  prefix        String?
+  firstName     String?
+  lastName      String?
   nickname      String?
   phone         String    @unique
   idCard        String?

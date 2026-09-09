@@ -10,6 +10,18 @@ export class CreateTenantDto {
   nickname?: string;
 
   @IsString()
+  @IsOptional()
+  prefix?: string;
+
+  @IsString()
+  @IsOptional()
+  firstName?: string;
+
+  @IsString()
+  @IsOptional()
+  lastName?: string;
+
+  @IsString()
   @IsNotEmpty()
   phone: string;
 

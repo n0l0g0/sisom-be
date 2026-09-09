@@ -34,6 +34,24 @@ type LineImageEvent = LineMessageEvent & {
   message: { id: string; type: 'image' };
 };
 
+type VerifiedGroupSlip = {
+  id: string;
+  slipUrl: string;
+  amount: number;
+  transactedAt?: string;
+  bankRef?: string;
+  createdAt: number;
+};
+
+type GroupPaymentInstruction = {
+  text: string;
+  buildingNumber: number;
+  roomNumber: string;
+  month: number;
+  year: number;
+  createdAt: number;
+};
+
 type RoomContact = {
   id: string;
   name: string;
@@ -86,7 +104,7 @@ type MaintenanceWithRoomContracts = Prisma.MaintenanceRequestGetPayload<{
 function formatBkkDateTime(date: Date): string {
   const bkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(bkk.getDate())}/${pad(bkk.getMonth() + 1)}/${bkk.getFullYear() + 543}`;
+  return `${pad(bkk.getDate())}/${pad(bkk.getMonth() + 1)}/${bkk.getFullYear() + 543} ${pad(bkk.getHours())}:${pad(bkk.getMinutes())}`;
 }
 
 @Injectable()
@@ -178,6 +196,18 @@ export class LineService implements OnModuleInit {
   >();
   private readonly actionCooldown = new Map<string, number>();
   private readonly recentMedia = new Map<string, { id: string; expires: number }>();
+  private readonly groupSlipRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly groupImageBuffer = new Map<string, { url: string; ts: number }[]>();
+  private readonly groupMoveOutPending = new Map<
+    string,
+    { requestId: string; roomLabel: string; expires: number; imgCount: number }
+  >();
+  private readonly verifiedGroupSlips = new Map<string, VerifiedGroupSlip[]>();
+  private readonly pendingGroupPaymentInstructions = new Map<
+    string,
+    GroupPaymentInstruction[]
+  >();
+  private readonly groupInvoiceLocks = new Set<string>();
   private isOnCooldown(userId?: string | null, action?: string, ms = 15000): boolean {
     const uid = (userId || '').trim();
     const act = (action || '').trim();
@@ -1485,6 +1515,7 @@ export class LineService implements OnModuleInit {
     } catch {
       // ignore
     }
+    this.loadGroupPaymentQueues();
   }
 
   private async setDefaultRichMenuGeneral() {
@@ -1648,6 +1679,12 @@ export class LineService implements OnModuleInit {
   }
 
   async handleEvent(event: WebhookEvent) {
+    if (
+      event.type === 'postback' &&
+      (event.source.type === 'group' || event.source.type === 'room')
+    ) {
+      return null;
+    }
     if (event.type === 'postback') {
       const userId = event.source.userId;
       const data = (event.postback?.data || '').trim();
@@ -2263,28 +2300,66 @@ export class LineService implements OnModuleInit {
       }
       return Promise.resolve(null);
     }
+    if (event.type === 'join') {
+      // Bot was added to a group/room — log and do nothing (do NOT call leaveGroup)
+      this.logger.log(
+        `Bot joined group/room: sourceType=${event.source?.type} groupId=${
+          (event.source as { groupId?: string })?.groupId ??
+          (event.source as { roomId?: string })?.roomId ??
+          'n/a'
+        }`,
+      );
+      return Promise.resolve(null);
+    }
+    if (event.type === 'leave') {
+      // Bot was removed from a group/room — log for debugging
+      this.logger.warn(
+        `Bot left group/room (LINE platform removed it): sourceType=${event.source?.type} groupId=${
+          (event.source as { groupId?: string })?.groupId ??
+          (event.source as { roomId?: string })?.roomId ??
+          'n/a'
+        }`,
+      );
+      return Promise.resolve(null);
+    }
     if (event.type !== 'message') {
+      this.logger.log(`Unhandled event type: ${event.type}`);
       return Promise.resolve(null);
     }
 
     if (event.message.type === 'image') {
       const uid = (event as LineImageEvent).source.userId || '';
+      const isGroupMessage =
+        event.source.type === 'group' || event.source.type === 'room';
+      const conversationId = isGroupMessage
+        ? this.getLineConversationId(event as LineImageEvent)
+        : null;
       let imgUrl: string | null = null;
 
-      const mo = this.moveoutState.get(uid);
-      if (mo?.step) {
-        imgUrl = await this.handleMoveOutImage(event as LineImageEvent);
+      if (isGroupMessage) {
+        imgUrl = await this.handleGroupSlipImage(event as LineImageEvent);
       } else {
-        const maint = this.tenantMaintenanceState.get(uid);
-        if (maint?.step === 'WAIT_IMAGES') {
-          imgUrl = await this.handleMaintenanceImage(event as LineImageEvent);
+        const mo = this.moveoutState.get(uid);
+        if (mo?.step) {
+          imgUrl = await this.handleMoveOutImage(event as LineImageEvent);
         } else {
-          imgUrl = await this.handleSlipImage(event as LineImageEvent);
+          const maint = this.tenantMaintenanceState.get(uid);
+          if (maint?.step === 'WAIT_IMAGES') {
+            imgUrl = await this.handleMaintenanceImage(event as LineImageEvent);
+          } else {
+            imgUrl = await this.handleSlipImage(event as LineImageEvent);
+          }
         }
       }
 
-      if (uid) {
-        this.addRecentChat({ userId: uid, type: 'received_image', text: imgUrl || undefined });
+      const chatId = conversationId || uid;
+      if (chatId) {
+        this.addRecentChat({
+          userId: chatId,
+          type: 'received_image',
+          text: imgUrl || undefined,
+          actor: isGroupMessage ? uid : undefined,
+        });
       }
       return null;
     }
@@ -2295,6 +2370,47 @@ export class LineService implements OnModuleInit {
 
     const userId = event.source.userId || '';
     const text = event.message.text.trim();
+
+    if (event.source.type === 'group' || event.source.type === 'room') {
+      const conversationId =
+        event.source.type === 'group'
+          ? event.source.groupId
+          : event.source.roomId;
+      this.addRecentChat({
+        userId: conversationId,
+        type: 'received_text',
+        text,
+        actor: userId || undefined,
+      });
+      if (
+        await this.handleGroupMoveOutText(
+          conversationId,
+          userId,
+          event.replyToken,
+          text,
+        )
+      ) {
+        return null;
+      }
+      if (
+        await this.handleGroupMoveInText(
+          conversationId,
+          userId,
+          event.replyToken,
+          text,
+        )
+      ) {
+        return null;
+      }
+      await this.handleGroupPaymentText(
+        conversationId,
+        userId,
+        event.replyToken,
+        text,
+      );
+      return null;
+    }
+
     if (userId) {
       this.addRecentChat({ userId, type: 'received_text', text });
     }
@@ -5629,6 +5745,1326 @@ export class LineService implements OnModuleInit {
     
     return null;
   }
+
+  private normalizeThaiDigits(value: string): string {
+    const thaiDigits = '๐๑๒๓๔๕๖๗๘๙';
+    return value.replace(/[๐-๙]/g, (digit) =>
+      String(thaiDigits.indexOf(digit)),
+    );
+  }
+
+  // Rooms are usually "4/13" but some are named ("บ้านน้อย") and tenants write
+  // them many ways: "1/บ้านน้อย", "ห.1บ้านน้อย", "ตึก1บ้านน้อย". Try the strict
+  // numeric form first, then the named-room forms.
+  private matchGroupRoomToken(
+    normalized: string,
+  ): { buildingNumber: number; roomNumber: string } | null {
+    const patterns = [
+      /(?:ตึก\s*)?(\d{1,2})\s*[/\-]\s*(?:ห้อง\s*)?(\d{1,3})/,
+      /(?:ตึก\s*)?(\d{1,2})\s*[/\-]\s*(?:ห้อง\s*)?([ก-๙]+?)(?=\s*(?:ชำระ|จ่าย|โอน|แจ้ง|$))/,
+      /(?:ตึก|หอ|ห\.)\s*(\d{1,2})\s*(?:ห้อง\s*)?([ก-๙]+?)(?=\s*(?:ชำระ|จ่าย|โอน|แจ้ง|$))/,
+    ];
+    for (const re of patterns) {
+      const m = normalized.match(re);
+      if (!m) continue;
+      const raw = (m[2] || '').trim();
+      if (!raw) continue;
+      return {
+        buildingNumber: Number(m[1]),
+        roomNumber: /^\d+$/.test(raw) ? String(Number(raw)) : raw,
+      };
+    }
+    return null;
+  }
+
+  private parseGroupPaymentInstruction(
+    rawText: string,
+  ): GroupPaymentInstruction | null {
+    const normalized = this.normalizeThaiDigits(rawText)
+      .replace(/\u00a0/g, ' ')
+      .trim();
+    if (!/ชำระ/.test(normalized) || !/ห้อง/.test(normalized)) return null;
+
+    const roomToken = this.matchGroupRoomToken(normalized);
+    if (!roomToken) return null;
+
+    const compact = normalized.replace(/[.\s]/g, '');
+    const monthAliases: Array<[string, number]> = [
+      ['มกราคม', 1],
+      ['มค', 1],
+      ['กุมภาพันธ์', 2],
+      ['กพ', 2],
+      ['มีนาคม', 3],
+      ['มีค', 3],
+      ['เมษายน', 4],
+      ['เมย', 4],
+      ['พฤษภาคม', 5],
+      ['พค', 5],
+      ['มิถุนายน', 6],
+      ['มิย', 6],
+      ['กรกฎาคม', 7],
+      ['กค', 7],
+      ['สิงหาคม', 8],
+      ['สค', 8],
+      ['กันยายน', 9],
+      ['กย', 9],
+      ['ตุลาคม', 10],
+      ['ตค', 10],
+      ['พฤศจิกายน', 11],
+      ['พย', 11],
+      ['ธันวาคม', 12],
+      ['ธค', 12],
+    ];
+    let month: number | undefined;
+    let rawYear: number | undefined;
+    // Tenants often mistype the month: "เดืน" instead of "เดือน", or double a
+    // letter ("กันนยายน"). So the word "เดือน" is optional and every character
+    // of the month name may repeat.
+    for (const [alias, monthNumber] of monthAliases) {
+      const fuzzy = alias
+        .split('')
+        .map((ch) => ch + '+')
+        .join('');
+      const match = compact.match(new RegExp(fuzzy + `(\\d{2,4})?`));
+      if (!match) continue;
+      month = monthNumber;
+      rawYear = match[1] ? Number(match[1]) : undefined;
+      break;
+    }
+    if (!month) {
+      // No readable month at all - assume the current one; the amount-based
+      // fallback below will still pick the right bill if that guess is wrong.
+      month = new Date().getMonth() + 1;
+    }
+
+    let year = rawYear ?? new Date().getFullYear() + 543;
+    if (year < 100) year += 2500;
+    if (year >= 2400) year -= 543;
+    if (year < 2000 || year > 2200) return null;
+
+    return {
+      text: rawText,
+      buildingNumber: roomToken.buildingNumber,
+      roomNumber: roomToken.roomNumber,
+      month,
+      year,
+      createdAt: Date.now(),
+    };
+  }
+
+  private getGroupPaymentKey(conversationId: string, userId: string): string {
+    return `${conversationId}:${userId}`;
+  }
+
+  private getGroupPaymentQueueFilePath(): string {
+    return path.join(this.mediaService.getUploadDir(), 'group-payment-queue.json');
+  }
+
+  private persistGroupPaymentQueues() {
+    try {
+      const payload = {
+        slips: Object.fromEntries(this.verifiedGroupSlips.entries()),
+        instructions: Object.fromEntries(
+          this.pendingGroupPaymentInstructions.entries(),
+        ),
+      };
+      fs.writeFileSync(
+        this.getGroupPaymentQueueFilePath(),
+        JSON.stringify(payload, null, 2),
+        'utf8',
+      );
+    } catch (e) {
+      this.logger.warn(
+        `Persist group payment queue failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+
+  private loadGroupPaymentQueues() {
+    try {
+      const file = this.getGroupPaymentQueueFilePath();
+      if (!fs.existsSync(file)) return;
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+        slips?: Record<string, VerifiedGroupSlip[]>;
+        instructions?: Record<string, GroupPaymentInstruction[]>;
+      };
+      for (const [key, queue] of Object.entries(parsed.slips || {})) {
+        if (Array.isArray(queue)) this.verifiedGroupSlips.set(key, queue);
+      }
+      for (const [key, queue] of Object.entries(parsed.instructions || {})) {
+        if (Array.isArray(queue)) {
+          this.pendingGroupPaymentInstructions.set(key, queue);
+        }
+      }
+      for (const key of Array.from(this.verifiedGroupSlips.keys())) {
+        this.getPendingGroupSlips(key);
+      }
+      for (const key of Array.from(
+        this.pendingGroupPaymentInstructions.keys(),
+      )) {
+        this.getPendingGroupInstructions(key);
+      }
+      this.persistGroupPaymentQueues();
+      this.logger.log(
+        `Loaded persistent group payment queue: slips=${this.verifiedGroupSlips.size}, instructions=${this.pendingGroupPaymentInstructions.size}`,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `Load group payment queue failed: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+
+  private getPendingGroupSlips(key: string): VerifiedGroupSlip[] {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    const active = (this.verifiedGroupSlips.get(key) || []).filter(
+      (item) => item.createdAt >= cutoff,
+    );
+    if (active.length) this.verifiedGroupSlips.set(key, active);
+    else this.verifiedGroupSlips.delete(key);
+    return active;
+  }
+
+  private enqueueVerifiedGroupSlip(
+    conversationId: string,
+    userId: string,
+    slip: Omit<VerifiedGroupSlip, 'id' | 'createdAt'>,
+  ): VerifiedGroupSlip | null {
+    if (!conversationId || !userId || !Number.isFinite(slip.amount)) return null;
+    const key = this.getGroupPaymentKey(conversationId, userId);
+    const queue = this.getPendingGroupSlips(key);
+    const duplicate = queue.find(
+      (item) =>
+        item.slipUrl === slip.slipUrl ||
+        (!!slip.bankRef && item.bankRef === slip.bankRef),
+    );
+    if (duplicate) return duplicate;
+    const item: VerifiedGroupSlip = {
+      ...slip,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+    };
+    queue.push(item);
+    this.verifiedGroupSlips.set(key, queue);
+    this.persistGroupPaymentQueues();
+    return item;
+  }
+
+  private removeVerifiedGroupSlip(key: string, slipId: string) {
+    const remaining = this.getPendingGroupSlips(key).filter(
+      (item) => item.id !== slipId,
+    );
+    if (remaining.length) this.verifiedGroupSlips.set(key, remaining);
+    else this.verifiedGroupSlips.delete(key);
+    this.persistGroupPaymentQueues();
+  }
+
+  private getPendingGroupInstructions(key: string): GroupPaymentInstruction[] {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    const active = (this.pendingGroupPaymentInstructions.get(key) || []).filter(
+      (item) => item.createdAt >= cutoff,
+    );
+    if (active.length) this.pendingGroupPaymentInstructions.set(key, active);
+    else this.pendingGroupPaymentInstructions.delete(key);
+    return active;
+  }
+
+  private enqueueGroupPaymentInstruction(
+    key: string,
+    instruction: GroupPaymentInstruction,
+  ) {
+    const queue = this.getPendingGroupInstructions(key);
+    queue.push(instruction);
+    this.pendingGroupPaymentInstructions.set(key, queue.slice(-10));
+    this.persistGroupPaymentQueues();
+  }
+
+  private shiftGroupPaymentInstruction(
+    key: string,
+  ): GroupPaymentInstruction | undefined {
+    const queue = this.getPendingGroupInstructions(key);
+    const item = queue.shift();
+    if (queue.length) this.pendingGroupPaymentInstructions.set(key, queue);
+    else this.pendingGroupPaymentInstructions.delete(key);
+    this.persistGroupPaymentQueues();
+    return item;
+  }
+
+  private buildingMatchesNumber(
+    building: { name?: string | null; code?: string | null } | null,
+    buildingNumber: number,
+  ): boolean {
+    if (!building) return false;
+    const values = [building.name, building.code].filter(
+      (value): value is string => typeof value === 'string',
+    );
+    return values.some((value) => {
+      const numbers = this.normalizeThaiDigits(value).match(/\d+/g) || [];
+      return numbers.some((number) => Number(number) === buildingNumber);
+    });
+  }
+
+  private formatInvoicePeriod(month: number, year: number): string {
+    const names = [
+      '',
+      'มกราคม',
+      'กุมภาพันธ์',
+      'มีนาคม',
+      'เมษายน',
+      'พฤษภาคม',
+      'มิถุนายน',
+      'กรกฎาคม',
+      'สิงหาคม',
+      'กันยายน',
+      'ตุลาคม',
+      'พฤศจิกายน',
+      'ธันวาคม',
+    ];
+    return `${names[month]} ${year + 543}`;
+  }
+
+  private async settleVerifiedGroupSlip(
+    instruction: GroupPaymentInstruction,
+    slip: VerifiedGroupSlip,
+  ): Promise<{ consumeSlip: boolean; message: string }> {
+    const roomNumbers = Array.from(
+      new Set([instruction.roomNumber, String(Number(instruction.roomNumber))]),
+    );
+    const rooms = await this.prisma.room.findMany({
+      where: { number: { in: roomNumbers } },
+      include: {
+        building: true,
+        contracts: {
+          where: { isActive: true },
+          include: {
+            tenant: true,
+            invoices: {
+              where: {
+                status: {
+                  notIn: [InvoiceStatus.PAID, InvoiceStatus.CANCELLED],
+                },
+              },
+              include: {
+                payments: { where: { status: PaymentStatus.VERIFIED } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const matchingRooms = rooms.filter((room) =>
+      this.buildingMatchesNumber(room.building, instruction.buildingNumber),
+    );
+    let period = this.formatInvoicePeriod(instruction.month, instruction.year);
+    const roomLabel = `${instruction.buildingNumber}/${instruction.roomNumber}`;
+    if (matchingRooms.length !== 1) {
+      return {
+        consumeSlip: false,
+        message:
+          matchingRooms.length === 0
+            ? `ไม่พบตึก/ห้อง ${roomLabel} ในระบบ จึงยังไม่ตัดยอด กรุณาตรวจข้อความแล้วส่งใหม่`
+            : `พบห้อง ${roomLabel} มากกว่า 1 รายการ จึงยังไม่ตัดยอด กรุณาตรวจข้อมูลห้องในระบบ`,
+      };
+    }
+
+    const invoices = matchingRooms[0].contracts.flatMap((contract) =>
+      contract.invoices.map((invoice) => ({
+        ...invoice,
+        tenantName: contract.tenant?.name || '',
+      })),
+    );
+    if (!invoices.length) {
+      return {
+        consumeSlip: false,
+        message: `บิลห้อง ${roomLabel} ตัดยอดในระบบเรียบร้อยแล้ว`,
+      };
+    }
+    const payable = invoices.filter(
+      (invoice) =>
+        invoice.status !== InvoiceStatus.PAID &&
+        invoice.status !== InvoiceStatus.CANCELLED,
+    );
+    if (payable.length === 0) {
+      return {
+        consumeSlip: false,
+        message: `บิลห้อง ${roomLabel} เดือน${period} ตัดยอดในระบบเรียบร้อยแล้ว`,
+      };
+    }
+    const remainingOf = (inv: (typeof invoices)[number]): number =>
+      Math.max(
+        0,
+        Number(inv.totalAmount) -
+          inv.payments.reduce((sum, p) => sum + Number(p.amount), 0),
+      );
+    // Prefer the month the tenant stated. If that bill's outstanding amount does
+    // not match the slip (wrong/miswritten month), fall back to whichever unpaid
+    // bill of the same room matches the slip amount exactly.
+    const statedMonth = payable.filter(
+      (inv) => inv.month === instruction.month && inv.year === instruction.year,
+    );
+    const amountMatches = payable.filter(
+      (inv) => Math.abs(remainingOf(inv) - slip.amount) <= 0.01,
+    );
+    const statedMonthFits =
+      statedMonth.length === 1 &&
+      Math.abs(remainingOf(statedMonth[0]) - slip.amount) <= 0.01;
+    const invoice = statedMonthFits
+      ? statedMonth[0]
+      : amountMatches.length === 1
+        ? amountMatches[0]
+        : statedMonth.length === 1
+          ? statedMonth[0]
+          : undefined;
+    if (!invoice) {
+      const list = payable
+        .map(
+          (inv) =>
+            `${this.formatInvoicePeriod(inv.month, inv.year)} ฿${remainingOf(
+              inv,
+            ).toLocaleString('th-TH')}`,
+        )
+        .join(', ');
+      return {
+        consumeSlip: false,
+        message: `ยอดสลิป ฿${slip.amount.toLocaleString('th-TH')} ไม่ตรงกับบิลค้างของห้อง ${roomLabel} (${list}) จึงยังไม่ตัดยอด กรุณาตรวจสอบ`,
+      };
+    }
+    period = this.formatInvoicePeriod(invoice.month, invoice.year);
+    const alreadyPaid = invoice.payments.reduce(
+      (sum, payment) => sum + Number(payment.amount),
+      0,
+    );
+    const remaining = Math.max(0, Number(invoice.totalAmount) - alreadyPaid);
+    if (Math.abs(remaining - slip.amount) > 0.01) {
+      return {
+        consumeSlip: false,
+        message: `ยอดสลิป ฿${slip.amount.toLocaleString('th-TH')} ไม่ตรงกับยอดค้างห้อง ${roomLabel} เดือน${period} ฿${remaining.toLocaleString('th-TH')} จึงยังไม่ตัดยอด`,
+      };
+    }
+    if (this.groupInvoiceLocks.has(invoice.id)) {
+      return {
+        consumeSlip: false,
+        message: `กำลังตัดยอดห้อง ${roomLabel} เดือน${period} อยู่ กรุณารอสักครู่`,
+      };
+    }
+
+    this.groupInvoiceLocks.add(invoice.id);
+    try {
+      const paidAt = slip.transactedAt ? new Date(slip.transactedAt) : new Date();
+      const safePaidAt = Number.isNaN(paidAt.getTime()) ? new Date() : paidAt;
+      const result = await this.prisma.$transaction(async (tx) => {
+        const fresh = await tx.invoice.findUnique({
+          where: { id: invoice.id },
+          include: {
+            payments: { where: { status: PaymentStatus.VERIFIED } },
+          },
+        });
+        if (!fresh) return 'MISSING' as const;
+        if (fresh.status === InvoiceStatus.PAID) return 'PAID' as const;
+        if (fresh.status === InvoiceStatus.CANCELLED) return 'CANCELLED' as const;
+
+        const duplicate = await tx.payment.findFirst({
+          where: slip.bankRef
+            ? { slipBankRef: slip.bankRef, status: PaymentStatus.VERIFIED }
+            : { slipImageUrl: slip.slipUrl, status: PaymentStatus.VERIFIED },
+          select: { invoiceId: true },
+        });
+        if (duplicate) {
+          return duplicate.invoiceId === fresh.id
+            ? ('PAID' as const)
+            : ('DUPLICATE' as const);
+        }
+
+        const freshPaid = fresh.payments.reduce(
+          (sum, payment) => sum + Number(payment.amount),
+          0,
+        );
+        const freshRemaining = Math.max(
+          0,
+          Number(fresh.totalAmount) - freshPaid,
+        );
+        if (Math.abs(freshRemaining - slip.amount) > 0.01) {
+          return 'AMOUNT_CHANGED' as const;
+        }
+        await tx.payment.create({
+          data: {
+            invoiceId: fresh.id,
+            amount: freshRemaining,
+            slipImageUrl: slip.slipUrl,
+            slipBankRef: slip.bankRef || 'LINE_GROUP_SLIP',
+            paidAt: safePaidAt,
+            verifiedBy: 'LINE_GROUP_AUTO',
+            status: PaymentStatus.VERIFIED,
+          },
+        });
+        await tx.invoice.update({
+          where: { id: fresh.id },
+          data: { status: InvoiceStatus.PAID },
+        });
+        return 'SUCCESS' as const;
+      });
+
+      if (result === 'SUCCESS') {
+        return {
+          consumeSlip: true,
+          message: `ตัดยอดเรียบร้อยแล้ว\nห้อง ${roomLabel}\nเดือน${period}\nยอด ฿${slip.amount.toLocaleString('th-TH')}\nแนบรูปสลิปในรายการรับชำระแล้ว`,
+        };
+      }
+      if (result === 'DUPLICATE') {
+        return {
+          consumeSlip: true,
+          message: `Ref สลิปนี้ถูกใช้ตัดยอดบิลอื่นแล้ว ระบบไม่ได้ตัดซ้ำ กรุณาตรวจสอบใน CMS`,
+        };
+      }
+      return {
+        consumeSlip: result === 'PAID',
+        message:
+          result === 'PAID'
+            ? `บิลห้อง ${roomLabel} เดือน${period} ตัดยอดในระบบเรียบร้อยแล้ว`
+            : `ข้อมูลบิลห้อง ${roomLabel} เปลี่ยนระหว่างตรวจสอบ จึงยังไม่ตัดยอด กรุณาลองใหม่`,
+      };
+    } finally {
+      this.groupInvoiceLocks.delete(invoice.id);
+    }
+  }
+
+  private pushGroupImage(key: string, url: string) {
+    const now = Date.now();
+    const list = (this.groupImageBuffer.get(key) || []).filter(
+      (x) => now - x.ts < 15 * 60 * 1000,
+    );
+    list.push({ url, ts: now });
+    this.groupImageBuffer.set(key, list.slice(-10));
+  }
+
+  private consumeGroupImages(key: string): string[] {
+    const now = Date.now();
+    const list = (this.groupImageBuffer.get(key) || []).filter(
+      (x) => now - x.ts < 15 * 60 * 1000,
+    );
+    this.groupImageBuffer.delete(key);
+    return list.map((x) => x.url);
+  }
+
+  private parseGroupMoveOut(
+    rawText: string,
+  ): { buildingNumber: number; roomNumber: string } | null {
+    const normalized = this.normalizeThaiDigits(rawText)
+      .replace(/ /g, ' ')
+      .trim();
+    if (!/ย้ายออก/.test(normalized)) return null;
+    return this.matchGroupRoomToken(normalized);
+  }
+
+  private async handleGroupNonSlipImage(
+    conversationId: string,
+    userId: string,
+    url: string,
+    replyToken: string,
+  ): Promise<void> {
+    if (!conversationId || !userId) return;
+    const key = this.getGroupPaymentKey(conversationId, userId);
+    const pending = this.groupMoveOutPending.get(key);
+    if (pending && pending.expires > Date.now()) {
+      try {
+        const req = await this.prisma.maintenanceRequest.findUnique({
+          where: { id: pending.requestId },
+        });
+        if (req && /ย้ายออก|เข้าอยู่ใหม่/.test(req.title || '')) {
+          const n = pending.imgCount + 1;
+          await this.prisma.maintenanceRequest.update({
+            where: { id: req.id },
+            data: { description: (req.description || '') + '\nIMG' + n + ': ' + url },
+          });
+          this.groupMoveOutPending.set(key, {
+            ...pending,
+            imgCount: n,
+            expires: Date.now() + 5 * 60 * 1000,
+          });
+          return;
+        }
+      } catch (e) {
+        this.logger.warn(
+          'attach move-out image failed: ' +
+            (e instanceof Error ? e.message : String(e)),
+        );
+      }
+    }
+    this.pushGroupImage(key, url);
+    if (!this.isOnCooldown(userId, 'GROUP_IMG_HINT', 5 * 60 * 1000)) {
+      this.startCooldown(userId, 'GROUP_IMG_HINT', 5 * 60 * 1000);
+      await this.replyText(
+        replyToken,
+        'รับรูปแล้ว\nหากเป็นสลิปชำระเงิน กรุณาแจ้งเลขห้องและเดือน เช่น "2/7 ชำระค่าห้องเดือนกันยายน 69"\nหากเป็นการแจ้งย้ายออก พิมพ์เช่น "4/18 แจ้งย้ายออก"',
+      );
+    }
+  }
+
+  private async handleGroupMoveOutText(
+    conversationId: string,
+    userId: string,
+    replyToken: string,
+    text: string,
+  ): Promise<boolean> {
+    const parsed = this.parseGroupMoveOut(text);
+    if (!parsed) return false;
+    if (!conversationId || !userId) {
+      await this.replyText(
+        replyToken,
+        'ไม่สามารถระบุผู้ส่งข้อความได้ กรุณาส่งใหม่อีกครั้ง',
+      );
+      return true;
+    }
+    const key = this.getGroupPaymentKey(conversationId, userId);
+    const roomLabel = parsed.buildingNumber + '/' + parsed.roomNumber;
+    const roomNumbers = Array.from(
+      new Set([parsed.roomNumber, String(Number(parsed.roomNumber))]),
+    );
+    const rooms = await this.prisma.room.findMany({
+      where: { number: { in: roomNumbers } },
+      include: {
+        building: true,
+        contracts: { where: { isActive: true }, include: { tenant: true } },
+      },
+    });
+    const matching = rooms.filter((r) =>
+      this.buildingMatchesNumber(r.building, parsed.buildingNumber),
+    );
+    if (matching.length !== 1) {
+      await this.replyText(
+        replyToken,
+        matching.length === 0
+          ? 'ไม่พบตึก/ห้อง ' + roomLabel + ' ในระบบ จึงยังไม่บันทึกแจ้งย้ายออก'
+          : 'พบห้อง ' + roomLabel + ' มากกว่า 1 รายการ กรุณาตรวจข้อมูลห้องในระบบ',
+      );
+      return true;
+    }
+    const room = matching[0];
+    const tenant = room.contracts[0]?.tenant;
+    const images = this.consumeGroupImages(key);
+    const descLines = ['TYPE: MOVE_OUT'];
+    images.forEach((u, i) => descLines.push('IMG' + (i + 1) + ': ' + u));
+    descLines.push('TENANT: ' + (tenant?.name || '-'));
+    descLines.push('PHONE: ' + (tenant?.phone || '-'));
+    descLines.push('SOURCE: LINE_GROUP');
+    const req = await this.prisma.maintenanceRequest.create({
+      data: {
+        roomId: room.id,
+        title: 'แจ้งย้ายออก',
+        description: descLines.join('\n'),
+        reportedBy: 'LINE_GROUP',
+      },
+    });
+    this.groupMoveOutPending.set(key, {
+      requestId: req.id,
+      roomLabel,
+      expires: Date.now() + 5 * 60 * 1000,
+      imgCount: images.length,
+    });
+    const bName = room.building?.name || room.building?.code || '';
+    await this.replyText(
+      replyToken,
+      'รับแจ้งย้ายออก' +
+        (bName ? ' ' + bName : '') +
+        ' ห้อง ' +
+        room.number +
+        (tenant?.name ? '\nผู้เช่า: ' + tenant.name : '') +
+        '\nแนบรูป ' +
+        images.length +
+        ' รูป เข้าเมนูแจ้งย้ายออกในเว็บแล้ว\nเจ้าหน้าที่จะดำเนินการต่อครับ',
+    );
+    return true;
+  }
+
+  private parseGroupMoveIn(
+    rawText: string,
+  ): { buildingNumber: number; roomNumber: string } | null {
+    const normalized = this.normalizeThaiDigits(rawText).trim();
+    if (!/เข้าอยู่ใหม่|ย้ายเข้า|เข้าใหม่|ผู้เช่าใหม่/.test(normalized)) return null;
+    return this.matchGroupRoomToken(normalized);
+  }
+
+  private async handleGroupMoveInText(
+    conversationId: string,
+    userId: string,
+    replyToken: string,
+    text: string,
+  ): Promise<boolean> {
+    const parsed = this.parseGroupMoveIn(text);
+    if (!parsed) return false;
+    if (!conversationId || !userId) {
+      await this.replyText(
+        replyToken,
+        'ไม่สามารถระบุผู้ส่งข้อความได้ กรุณาส่งใหม่อีกครั้ง',
+      );
+      return true;
+    }
+    const key = this.getGroupPaymentKey(conversationId, userId);
+    const roomLabel = parsed.buildingNumber + '/' + parsed.roomNumber;
+    const roomNumbers = Array.from(
+      new Set([parsed.roomNumber, String(Number(parsed.roomNumber))]),
+    );
+    const rooms = await this.prisma.room.findMany({
+      where: { number: { in: roomNumbers } },
+      include: { building: true },
+    });
+    const matching = rooms.filter((r) =>
+      this.buildingMatchesNumber(r.building, parsed.buildingNumber),
+    );
+    if (matching.length !== 1) {
+      await this.replyText(
+        replyToken,
+        matching.length === 0
+          ? 'ไม่พบตึก/ห้อง ' + roomLabel + ' ในระบบ จึงยังไม่บันทึกแจ้งเข้าอยู่ใหม่'
+          : 'พบห้อง ' + roomLabel + ' มากกว่า 1 รายการ กรุณาตรวจข้อมูลห้องในระบบ',
+      );
+      return true;
+    }
+    const room = matching[0];
+    const images = this.consumeGroupImages(key);
+    const descLines = ['TYPE: MOVE_IN'];
+    images.forEach((u, i) => descLines.push('IMG' + (i + 1) + ': ' + u));
+    descLines.push('SOURCE: LINE_GROUP');
+    const req = await this.prisma.maintenanceRequest.create({
+      data: {
+        roomId: room.id,
+        title: 'แจ้งเข้าอยู่ใหม่',
+        description: descLines.join('\n'),
+        reportedBy: 'LINE_GROUP',
+      },
+    });
+    this.groupMoveOutPending.set(key, {
+      requestId: req.id,
+      roomLabel,
+      expires: Date.now() + 5 * 60 * 1000,
+      imgCount: images.length,
+    });
+    const bName = room.building?.name || room.building?.code || '';
+    await this.replyText(
+      replyToken,
+      'รับแจ้งเข้าอยู่ใหม่' +
+        (bName ? ' ' + bName : '') +
+        ' ห้อง ' +
+        room.number +
+        '\nแนบรูป ' +
+        images.length +
+        ' รูป เข้าเมนูแจ้งเข้าอยู่ใหม่ในเว็บแล้ว\nกรุณากรอกข้อมูลผู้เช่าในระบบ',
+    );
+    return true;
+  }
+
+  // Policy: if SlipOK could not read the slip we NEVER settle it automatically.
+  // It always goes into the payments review queue as PENDING so a human checks
+  // it. When the bill is already fully paid the pending amount is 0, so even an
+  // accidental confirm cannot inflate the paid total.
+  private async createManualReviewPayment(
+    key: string,
+    instruction: GroupPaymentInstruction,
+  ): Promise<{ ok: boolean; message: string }> {
+    const now = Date.now();
+    const images = (this.groupImageBuffer.get(key) || [])
+      .filter((x) => now - x.ts < 15 * 60 * 1000)
+      .map((x) => x.url);
+    if (!images.length) return { ok: false, message: '' };
+    const roomLabel = instruction.buildingNumber + '/' + instruction.roomNumber;
+    const roomNumbers = Array.from(
+      new Set([instruction.roomNumber, String(Number(instruction.roomNumber))]),
+    );
+    const rooms = await this.prisma.room.findMany({
+      where: { number: { in: roomNumbers } },
+      include: {
+        building: true,
+        contracts: {
+          where: { isActive: true },
+          include: {
+            invoices: {
+              include: {
+                payments: { where: { status: PaymentStatus.VERIFIED } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const matching = rooms.filter((r) =>
+      this.buildingMatchesNumber(r.building, instruction.buildingNumber),
+    );
+    if (matching.length !== 1) return { ok: false, message: '' };
+    const invoices = matching[0].contracts.flatMap((c) => c.invoices);
+    if (!invoices.length) return { ok: false, message: '' };
+    const sameMonth = (i: (typeof invoices)[number]) =>
+      i.month === instruction.month && i.year === instruction.year;
+    const payable = invoices.filter(
+      (i) =>
+        i.status !== InvoiceStatus.PAID && i.status !== InvoiceStatus.CANCELLED,
+    );
+    const invoice =
+      payable.find(sameMonth) ||
+      payable[0] ||
+      invoices.find(sameMonth) ||
+      invoices[0];
+    const slipUrl = images[images.length - 1];
+    const already = await this.prisma.payment.findFirst({
+      where: { invoiceId: invoice.id, slipImageUrl: slipUrl },
+    });
+    if (already) return { ok: false, message: '' };
+    const paid = invoice.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const remaining = Math.max(0, Number(invoice.totalAmount) - paid);
+    const settled = remaining <= 0.01;
+    await this.prisma.payment.create({
+      data: {
+        invoiceId: invoice.id,
+        amount: remaining,
+        slipImageUrl: slipUrl,
+        slipBankRef: JSON.stringify({
+          note: settled
+            ? 'ตรวจสลิปอัตโนมัติไม่ได้ และบิลนี้ชำระครบแล้ว อาจเป็นสลิปซ้ำ โปรดตรวจสอบ'
+            : 'ตรวจสลิปอัตโนมัติไม่ได้ รอเจ้าหน้าที่ตรวจสอบ',
+          source: 'LINE_GROUP',
+          images,
+        }),
+        status: PaymentStatus.PENDING,
+      },
+    });
+    this.groupImageBuffer.delete(key);
+    const period = this.formatInvoicePeriod(invoice.month, invoice.year);
+    return {
+      ok: true,
+      message: settled
+        ? 'บิลห้อง ' +
+          roomLabel +
+          ' เดือน' +
+          period +
+          ' ตัดยอดในระบบเรียบร้อยแล้ว\nสลิปที่ส่งมาระบบอ่านอัตโนมัติไม่ได้ จึงส่งให้เจ้าหน้าที่ตรวจสอบอีกครั้ง'
+        : 'รับสลิปห้อง ' +
+          roomLabel +
+          ' เดือน' +
+          period +
+          ' แล้ว\nระบบตรวจสลิปอัตโนมัติไม่ได้ จึงส่งให้เจ้าหน้าที่ตรวจสอบ\nจะแจ้งผลอีกครั้งเมื่อตัดยอดเรียบร้อย',
+    };
+  }
+
+  private async handleGroupPaymentText(
+    conversationId: string,
+    userId: string,
+    replyToken: string,
+    text: string,
+  ): Promise<boolean> {
+    const instruction = this.parseGroupPaymentInstruction(text);
+    if (!instruction) return false;
+    if (!conversationId || !userId) {
+      await this.replyText(
+        replyToken,
+        'ไม่สามารถระบุผู้ส่งข้อความได้ จึงยังไม่ตัดยอด กรุณาส่งใหม่อีกครั้ง',
+      );
+      return true;
+    }
+
+    const key = this.getGroupPaymentKey(conversationId, userId);
+    const slip = this.getPendingGroupSlips(key)[0];
+    if (!slip) {
+      // SlipOK could not read the slip (unsupported QR, blurry photo...). Still
+      // record it against the bill as PENDING so it shows up in the payments
+      // review queue instead of vanishing.
+      const manual = await this.createManualReviewPayment(key, instruction);
+      if (manual.ok) {
+        await this.replyText(replyToken, manual.message);
+        return true;
+      }
+      this.enqueueGroupPaymentInstruction(key, instruction);
+      await this.replyText(
+        replyToken,
+        'รับข้อมูลห้อง ' +
+          instruction.buildingNumber +
+          '/' +
+          instruction.roomNumber +
+          ' เดือน' +
+          this.formatInvoicePeriod(instruction.month, instruction.year) +
+          ' แล้ว กำลังรอผลตรวจสลิป ระบบจะแจ้งเมื่อตัดยอดเรียบร้อย',
+      );
+      return true;
+    }
+
+    const result = await this.settleVerifiedGroupSlip(instruction, slip);
+    if (result.consumeSlip) this.removeVerifiedGroupSlip(key, slip.id);
+    await this.replyText(replyToken, result.message);
+    return true;
+  }
+
+  private getLineConversationId(event: LineImageEvent): string | null {
+    const source = event.source as {
+      type?: string;
+      userId?: string;
+      groupId?: string;
+      roomId?: string;
+    };
+    if (source.type === 'group') return source.groupId || null;
+    if (source.type === 'room') return source.roomId || null;
+    return source.userId || null;
+  }
+
+  private async saveLineImage(
+    event: LineImageEvent,
+    logLabel: string,
+  ): Promise<{ filepath: string; url: string } | null> {
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    const filepath = join(this.mediaService.getUploadDir(), filename);
+    const apiUrl = `https://api-data.line.me/v2/bot/message/${event.message.id}/content`;
+    const maxAttempts = 3;
+    let lastError = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const res = await fetch(apiUrl, {
+          headers: {
+            Authorization: `Bearer ${await this.getChannelAccessTokenAsync()}`,
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          throw new Error(`LINE fetch failed: ${res.status} ${res.statusText}`);
+        }
+        if (!res.body) {
+          throw new Error('LINE response has no body');
+        }
+        const stream = Readable.fromWeb(
+          res.body as unknown as NodeReadableStream<Uint8Array>,
+        );
+        await pipeline(stream, createWriteStream(filepath));
+        clearTimeout(timer);
+        try {
+          const img = await Jimp.read(filepath);
+          const maxW = 1200;
+          if (img.getWidth() > maxW) img.resize(maxW, Jimp.AUTO);
+          img.quality(80);
+          await img.writeAsync(filepath);
+        } catch (e) {
+          this.logger.warn(
+            `${logLabel} image optimize failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        }
+        const baseUrl =
+          process.env.PUBLIC_API_URL ||
+          process.env.INTERNAL_API_URL ||
+          process.env.API_URL ||
+          'https://line-sisom.washqueue.com';
+        if (attempt > 1) {
+          this.logger.warn(`${logLabel} image saved on attempt ${attempt}`);
+        }
+        return {
+          filepath,
+          url: this.mediaService.buildUrlFromBase(baseUrl, filename),
+        };
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        this.logger.warn(
+          `${logLabel} image save attempt ${attempt}/${maxAttempts} failed: ${lastError}`,
+        );
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, attempt * 1500));
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    this.logger.warn(
+      `${logLabel} image save failed after ${maxAttempts} attempts: ${lastError}`,
+    );
+    return null;
+  }
+
+  private isSlipOkPending(message?: string): boolean {
+    return /pending|processing|manual\s*review|waiting|รอตรวจสอบ|อยู่ระหว่างตรวจ|กำลังตรวจ|ประมาณ\s*\d+\s*นาที|\d+\s*นาที|กรุงเทพ/i.test(
+      message || '',
+    );
+  }
+
+  private async verifyStandaloneSlip(slipUrl: string, filepath: string) {
+    const byUrl = await this.slipOk.verifyByUrl(slipUrl);
+    if (byUrl.ok || byUrl.duplicate || this.isSlipOkPending(byUrl.message)) {
+      return byUrl;
+    }
+    return this.slipOk.verifyByData(filepath);
+  }
+
+  private buildGroupSlipFlex(
+    status: 'SUCCESS' | 'DUPLICATE' | 'INVALID' | 'PENDING',
+    data: {
+      amount?: number;
+      origin?: string;
+      dest?: string;
+      when?: string;
+      checkedAt?: string;
+      ref?: string;
+      reason?: string;
+    },
+  ) {
+    const cfg =
+      status === 'SUCCESS'
+        ? {
+            title: 'สลิปถูกต้อง',
+            color: '#059669',
+            softColor: '#ECFDF5',
+          }
+        : status === 'DUPLICATE'
+          ? {
+              title: 'สลิปซ้ำ',
+              color: '#D97706',
+              softColor: '#FFF7ED',
+            }
+          : status === 'PENDING'
+            ? {
+                title: 'กำลังตรวจสอบสลิป',
+                color: '#D97706',
+                softColor: '#FFF7ED',
+              }
+            : {
+                title: 'สลิปไม่ถูกต้อง',
+                color: '#DC2626',
+                softColor: '#FEF2F2',
+              };
+    const detailRows: Array<Record<string, unknown>> = [];
+    const addDetail = (label: string, value?: string) => {
+      if (!value) return;
+      detailRows.push({
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'text',
+            text: label,
+            size: 'sm',
+            color: '#64748B',
+            flex: 3,
+          },
+          {
+            type: 'text',
+            text: value,
+            size: 'sm',
+            color: '#1E293B',
+            weight: 'bold',
+            wrap: true,
+            flex: 7,
+          },
+        ],
+      });
+    };
+    if (data.when) {
+      addDetail(
+        status === 'DUPLICATE' ? 'วันที่ทำรายการ' : 'รับเงินเมื่อ',
+        data.when,
+      );
+    }
+    addDetail('ชื่อผู้โอน', data.origin);
+    addDetail('ชื่อผู้รับ', data.dest);
+    addDetail('เลขอ้างอิง', data.ref);
+    if (status === 'PENDING') {
+      addDetail('ตรวจซ้ำ', 'อัตโนมัติภายใน 5 นาที');
+    }
+    const bodyContents: Array<Record<string, unknown>> = [
+      {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: cfg.softColor,
+        cornerRadius: '6px',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'text',
+            text: cfg.title,
+            weight: 'bold',
+            size: 'lg',
+            color: cfg.color,
+            wrap: true,
+          },
+        ],
+      },
+    ];
+    if (typeof data.amount === 'number') {
+      bodyContents.push({
+        type: 'box',
+        layout: 'baseline',
+        margin: 'lg',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: `฿${data.amount.toLocaleString('th-TH')}`,
+            weight: 'bold',
+            size: '3xl',
+            color: '#0F172A',
+            flex: 0,
+            adjustMode: 'shrink-to-fit',
+          },
+          {
+            type: 'text',
+            text: 'บาท',
+            size: 'sm',
+            color: '#64748B',
+            flex: 0,
+          },
+        ],
+      });
+    }
+    if (detailRows.length) {
+      bodyContents.push({ type: 'separator', margin: 'lg', color: '#E2E8F0' });
+      bodyContents.push({
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        margin: 'lg',
+        contents: detailRows,
+      });
+    }
+    if (data.checkedAt) {
+      bodyContents.push({
+        type: 'box',
+        layout: 'vertical',
+        margin: 'lg',
+        backgroundColor: '#FFF7ED',
+        cornerRadius: '6px',
+        paddingAll: '10px',
+        contents: [
+          {
+            type: 'text',
+            text: 'ตรวจสลิปครั้งแรก',
+            size: 'xs',
+            color: '#9A3412',
+          },
+          {
+            type: 'text',
+            text: data.checkedAt,
+            size: 'sm',
+            color: '#9A3412',
+            weight: 'bold',
+            margin: 'xs',
+          },
+        ],
+      });
+    }
+    if (data.reason) {
+      bodyContents.push({
+        type: 'text',
+        text: data.reason,
+        size: 'sm',
+        color: '#64748B',
+        wrap: true,
+        maxLines: 6,
+        margin: 'lg',
+      });
+    }
+    return {
+      type: 'flex',
+      altText: `ผลตรวจสลิป (${cfg.title})`,
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '20px',
+          contents: bodyContents,
+        },
+      },
+    };
+  }
+
+  private buildGroupSlipResultFlex(verify: {
+    ok: boolean;
+    duplicate?: boolean;
+    amount?: number;
+    sourceName?: string;
+    sourceBank?: string;
+    sourceAccount?: string;
+    destName?: string;
+    destBank?: string;
+    destAccount?: string;
+    transactedAt?: string;
+    bankRef?: string;
+    message?: string;
+    checkedAt?: string;
+  }) {
+    const when = verify.transactedAt
+      ? formatBkkDateTime(new Date(verify.transactedAt))
+      : undefined;
+    const origin = verify.sourceName || undefined;
+    const dest = verify.destName || undefined;
+    const checkedAtDate = verify.checkedAt
+      ? new Date(verify.checkedAt)
+      : undefined;
+    const checkedAt =
+      checkedAtDate && !Number.isNaN(checkedAtDate.getTime())
+        ? formatBkkDateTime(checkedAtDate)
+        : verify.checkedAt;
+    if (verify.ok) {
+      return this.buildGroupSlipFlex('SUCCESS', {
+        amount: verify.amount,
+        origin,
+        dest,
+        when,
+        ref: verify.bankRef,
+        reason:
+          'กรุณาแจ้งเลขห้องและเดือนที่ต้องการตัดยอด',
+      });
+    }
+    if (verify.duplicate) {
+      return this.buildGroupSlipFlex('DUPLICATE', {
+        amount: verify.amount,
+        origin,
+        dest,
+        when,
+        checkedAt,
+        ref: verify.bankRef,
+        reason: 'สลิปนี้เคยถูกส่งเข้ามาตรวจสอบแล้ว',
+      });
+    }
+    return this.buildGroupSlipFlex('INVALID', {
+      reason: verify.message || 'ไม่สามารถตรวจสอบสลิปนี้ได้',
+      ref: verify.bankRef,
+    });
+  }
+
+  private scheduleGroupSlipRetry(
+    conversationId: string,
+    userId: string,
+    slipUrl: string,
+    filepath: string,
+  ) {
+    const jobId = `${conversationId}:${slipUrl}`;
+    const oldTimer = this.groupSlipRetryTimers.get(jobId);
+    if (oldTimer) clearTimeout(oldTimer);
+    const timer = setTimeout(() => {
+      this.groupSlipRetryTimers.delete(jobId);
+      this.verifyStandaloneSlip(slipUrl, filepath)
+        .then(async (verify) => {
+          const flex = this.isSlipOkPending(verify.message)
+            ? this.buildGroupSlipFlex('PENDING', {
+                reason:
+                  verify.message ||
+                  'SlipOK ยังแจ้งว่ารอตรวจสอบ กรุณาลองตรวจอีกครั้งภายหลัง',
+              })
+            : this.buildGroupSlipResultFlex(verify);
+          await this.pushFlex(conversationId, flex);
+          if (verify.ok && typeof verify.amount === 'number') {
+            const slip = this.enqueueVerifiedGroupSlip(conversationId, userId, {
+              slipUrl,
+              amount: verify.amount,
+              transactedAt: verify.transactedAt,
+              bankRef: verify.bankRef,
+            });
+            if (slip) {
+              const key = this.getGroupPaymentKey(conversationId, userId);
+              const instruction = this.shiftGroupPaymentInstruction(key);
+              if (instruction) {
+                const result = await this.settleVerifiedGroupSlip(
+                  instruction,
+                  slip,
+                );
+                if (result.consumeSlip) {
+                  this.removeVerifiedGroupSlip(key, slip.id);
+                }
+                await this.pushMessage(conversationId, result.message);
+              }
+            }
+          }
+        })
+        .catch((e) => {
+          this.logger.warn(
+            `Group slip retry failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        });
+    }, 5 * 60 * 1000);
+    this.groupSlipRetryTimers.set(jobId, timer);
+  }
+
+  private async handleGroupSlipImage(event: LineImageEvent): Promise<string | null> {
+    const conversationId = this.getLineConversationId(event);
+    if (!conversationId) return null;
+    const userId = event.source.userId || '';
+    const mediaId = event.message.id;
+    const recentKey = `${event.source.type}:${conversationId}:${mediaId}`;
+    if (mediaId) {
+      const prev = this.recentMedia.get(recentKey);
+      const now = Date.now();
+      if (prev && prev.id === mediaId && prev.expires > now) return null;
+      this.recentMedia.set(recentKey, {
+        id: mediaId,
+        expires: now + 2 * 60 * 1000,
+      });
+      setTimeout(() => {
+        const p = this.recentMedia.get(recentKey);
+        if (p && p.expires <= Date.now()) this.recentMedia.delete(recentKey);
+      }, 2 * 60 * 1000);
+    }
+    const saved = await this.saveLineImage(event, 'Group slip');
+    if (!saved) {
+      await this.replyText(
+        event.replyToken,
+        'ระบบไม่สามารถบันทึกสลิปได้ กรุณาส่งใหม่อีกครั้ง',
+      );
+      return null;
+    }
+    const verify = await this.verifyStandaloneSlip(saved.url, saved.filepath);
+    if (this.isSlipOkPending(verify.message)) {
+      this.scheduleGroupSlipRetry(
+        conversationId,
+        userId,
+        saved.url,
+        saved.filepath,
+      );
+      await this.replyFlex(
+        event.replyToken,
+        this.buildGroupSlipFlex('PENDING', {
+          reason: verify.message,
+        }),
+      );
+      return saved.url;
+    }
+    if (!verify.ok && !verify.duplicate) {
+      await this.handleGroupNonSlipImage(
+        conversationId,
+        userId,
+        saved.url,
+        event.replyToken,
+      );
+      return saved.url;
+    }
+    await this.replyFlex(
+      event.replyToken,
+      this.buildGroupSlipResultFlex(verify),
+    );
+    if (verify.duplicate) return saved.url;
+    if (verify.ok && typeof verify.amount === 'number' && userId) {
+      const slip = this.enqueueVerifiedGroupSlip(conversationId, userId, {
+        slipUrl: saved.url,
+        amount: verify.amount,
+        transactedAt: verify.transactedAt,
+        bankRef: verify.bankRef,
+      });
+      if (slip) {
+        const key = this.getGroupPaymentKey(conversationId, userId);
+        const instruction = this.shiftGroupPaymentInstruction(key);
+        if (instruction) {
+          const result = await this.settleVerifiedGroupSlip(instruction, slip);
+          if (result.consumeSlip) {
+            this.removeVerifiedGroupSlip(key, slip.id);
+          }
+          await this.pushMessage(conversationId, result.message);
+        }
+      }
+    }
+    return saved.url;
+  }
+
   private async handleSlipImage(event: LineImageEvent): Promise<string | null> {
     const client = await this.getClientAsync();
     if (!client) return null;

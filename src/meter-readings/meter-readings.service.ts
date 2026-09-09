@@ -7,6 +7,7 @@ import { InvoicesService } from '../invoices/invoices.service';
 import {
   appendLog,
   readDeletedStore,
+  restoreFromDeletedStore,
   softDeleteRecord,
 } from '../activity/logger';
 
@@ -42,6 +43,8 @@ export class MeterReadingsService {
         create: createMeterReadingDto,
       })
       .then((mr) => {
+        // If this record was previously soft-deleted, restore it so it appears in queries again.
+        restoreFromDeletedStore('MeterReading', mr.id);
         appendLog({
           action: 'UPSERT',
           entityType: 'MeterReading',
