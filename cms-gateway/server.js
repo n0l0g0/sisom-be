@@ -8,7 +8,11 @@ const jwt = require('jsonwebtoken');
 
 const PORT = process.env.PORT || 3011;
 const TARGET_URL = process.env.TARGET_URL || 'http://sisom-backend:3000';
-const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 
 const app = express();
 

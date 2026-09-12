@@ -13,8 +13,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - UPLOAD_DIR=/app/uploads
-      - JWT_SECRET=${JWT_SECRET:-supersecretkey}
-      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-supersecretkey}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in the host environment}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set in the host environment}
       - DATABASE_URL=postgresql://admin:password@172.18.0.1:5433/sisomapt?schema=public
       - OWNER_API_URL=http://owner13rent-backend:3000
     volumes:
@@ -35,7 +35,7 @@ services:
     environment:
       - PORT=3011
       - TARGET_URL=http://sisom-backend:3000
-      - JWT_SECRET=${JWT_SECRET:-supersecretkey}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in the host environment}
     restart: unless-stopped
     networks:
       - sisom-be_default

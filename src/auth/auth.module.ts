@@ -6,6 +6,7 @@ import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaModule } from '../prisma/prisma.module';
+import { getJwtSecret } from './jwt-secret';
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     PassportModule,
     PrismaModule,
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'sisomapt-secret-key-change-it',
+      secret: getJwtSecret(),
       signOptions: { expiresIn: '1d' },
     }),
   ],

@@ -2,7 +2,11 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 const OWNER_API = process.env.OWNER_API_URL || 'http://owner13rent-backend:3000';
-const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || '';
+const INTERNAL_API_KEY: string = (() => {
+  const key = process.env.INTERNAL_API_KEY;
+  if (!key) throw new Error('INTERNAL_API_KEY environment variable is required');
+  return key;
+})();
 
 interface TenantConfig {
   url: string;
